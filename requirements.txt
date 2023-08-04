@@ -1,0 +1,13 @@
+pandas==1.4.1
+pymysql==1.0.2
+sqlalchemy==1.4.32
+python-dotenv==0.16.0
+sqlalchemy-utils==0.38.3
+kafka-python==2.0.2
+requests==2.28.1
+web3
+azure-eventhub
+azure-identity
+aiohttp
+yahoo-fin
+hexbytes
