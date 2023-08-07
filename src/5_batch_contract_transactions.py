@@ -1,6 +1,7 @@
 import os, logging
 from datetime import datetime
 from etherscan_api import EthercanAPI
+from streamer import ChainStreamer
 import argparse
 
 

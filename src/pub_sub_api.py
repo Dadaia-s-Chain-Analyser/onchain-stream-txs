@@ -47,7 +47,7 @@ class Streamer(ABC):
 
     
 
-class KafkaStreamer(metaclass=SingletonMeta):
+class KafkaClient(metaclass=SingletonMeta):
 
   
     def __init__(self, connection_str):
@@ -57,23 +57,25 @@ class KafkaStreamer(metaclass=SingletonMeta):
     def create_producer(self):
         partitioner = lambda key, all, available: 0
         json_serializer = lambda data: json.dumps(data).encode('utf-8')
-        self.producer = KafkaProducer(
+        producer = KafkaProducer(
                                         bootstrap_servers=self.connection_str,
                                         value_serializer=json_serializer, 
                                         partitioner=partitioner
         )
+        return producer
    
 
-    def create_consumer(self, topic, group_id):
-        self.consumer = KafkaConsumer(
+    def create_consumer(self, topic, consumer_group):
+        consumer = KafkaConsumer(
                                         topic, 
                                         bootstrap_servers=self.connection_str, 
                                         auto_offset_reset='latest', 
-                                        group_id=group_id
+                                        group_id=consumer_group
         )
+        return consumer
 
 
-    def create_kafka_topic_idempotent(self, topic, num_partitions, replication_factor, overwrite=False):
+    def create_idempotent_topic(self, topic, num_partitions=1, replication_factor=1, overwrite=False):
         admin = KafkaAdminClient(bootstrap_servers=self.connection_str)
         topic_blocks = NewTopic(name=topic, num_partitions=num_partitions, replication_factor=replication_factor)
 
@@ -87,9 +89,9 @@ class KafkaStreamer(metaclass=SingletonMeta):
             return "TOPIC ALREADY CREATED AND KEPT"
         else: return "TOPIC CREATED"
 
-    def send_data(self, topic, data, partition=None, key="0"):
-        self.producer.send(topic=topic, key=f"topic_{key}".encode('utf-8'), partition=partition, value=data)
-        self.producer.flush()
+    def send_data(self, producer, topic, data, partition=None, key="0"):
+        producer.send(topic=topic, key=f"topic_{key}".encode('utf-8'), partition=partition, value=data)
+        producer.flush()
 
 
 class EventHubStreamer(Streamer):
@@ -120,31 +122,3 @@ class EventHubStreamer(Streamer):
                 await self.producer.send_batch(event_data_batch)
         asyncio.run(run())
 
-
-
-class ChainStreamer:
-
-    def config_producer_kafka(self, connection_str, topic, num_partitions=1):
-        self.topic_produce = topic
-        self.num_partitions = num_partitions
-        self.kafka_streamer = KafkaStreamer(connection_str)
-        self.kafka_streamer.create_producer()
-        self.kafka_streamer.create_kafka_topic_idempotent(topic, num_partitions, 1, overwrite=False)
-
-    def config_consumer_kafka(self, connection_str, topic, consumer_group):
-        self.kafka_streamer = KafkaStreamer(connection_str)
-        self.kafka_streamer.create_consumer(topic, consumer_group)
-
-    def config_producer_event_hub(self, connection_str, eventhub_name):
-        self.event_hub_name = eventhub_name
-        self.event_hub_streamer = EventHubStreamer(connection_str)
-        self.event_hub_streamer.create_producer(eventhub_name)
-
-    def _produce_data(self, data):
-        if self.to_cloud: 
-            print("tem que cair aqui")
-            self.event_hub_streamer.send_data(data)
-        else: 
-            print("MAS CAI AQUI PORRA")
-            self.kafka_streamer.send_data(self.event_hub_name, data)
-        
