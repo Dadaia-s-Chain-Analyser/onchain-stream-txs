@@ -1,9 +1,9 @@
-import time, os
-import hexbytes
+import time, os, argparse, hexbytes
 from requests import HTTPError
 from web3 import Web3
-from pub_sub_api import KafkaClient
-
+from apis.kafka_api import KafkaClient
+from apis.azure_key_vault_api import KeyVaultAPI
+from azure.identity import DefaultAzureCredential
 
 class BlockMiner:
 
@@ -62,14 +62,28 @@ class BlockMiner:
 
 if __name__ == '__main__':
 
-    frequency = float(os.environ.get('FREQUENCY', 1))
-    api_key_node = os.environ['NODE_API_KEY']
     network = os.environ["NETWORK"]
     kafka_host = os.environ['KAFKA_ENDPOINT']
-    num_partitions = int(os.environ.get('NUM_PARTITIONS', 1))
-    tx_threshold=int(os.environ.get('THRESHOLD', 0))
-    topic_transactions = f"{network}_{os.environ['TOPIC_TRANSACTIONS']}"
-    topic_blocks = f"{network}_{os.environ['TOPIC_BLOCKS']}"
+    key_vault_node_name = os.environ['KEY_VAULT_NODE_NAME']
+    key_vault_node_secret = os.environ['KEY_VAULT_NODE_SECRET']
+
+    parser = argparse.ArgumentParser(description=f'Stream Blocks from {network} network')
+    parser.add_argument('--frequency', type=float, help='Clock Frequency', default=1)
+    parser.add_argument('--tx_threshold', type=int, help='Transaction Threshold', default=0)
+    parser.add_argument('--num_partitions', type=int, help='Number of Partitions', default=1)
+    parser.add_argument('--topic_blocks', type=str, help='Topic to produce block data', default="mined_blocks")
+    parser.add_argument('--topic_transactions', type=str, help='Topic to produce transaction data', default="block_transactions")
+
+    args = parser.parse_args()
+    frequency = args.frequency
+    tx_threshold = args.tx_threshold
+    topic_blocks = f'{network}_{args.topic_blocks}'
+    topic_transactions = f'{network}_{args.topic_transactions}'
+    num_partitions = args.num_partitions
+
+    credential = DefaultAzureCredential()
+    key_vault_api = KeyVaultAPI(key_vault_node_name, credential)
+    api_key_node = key_vault_api.get_secret(key_vault_node_secret)
 
     kafka_client = KafkaClient(connection_str=kafka_host)
     block_miner = BlockMiner(network, api_key_node, tx_threshold, frequency)

@@ -1,5 +1,5 @@
 import argparse, json, os
-from pub_sub_api import KafkaClient
+from apis.kafka_api import KafkaClient
 
 
 class TransactionClassifier:
@@ -11,7 +11,8 @@ class TransactionClassifier:
 
     # Método para classificar as transações e enviar para o Kafka ou EventHub
     def __classify_transaction(self, transaction) -> None:
-        if transaction['input'] == '0x': 
+       
+        if transaction['input'] == '': 
             topic = f'{self.network}_simple_transaction'
         elif transaction['to'] == None:
             topic = f'{self.network}_contract_deployment'
@@ -32,8 +33,14 @@ if __name__ == '__main__':
 
     network = os.environ["NETWORK"]
     kafka_host = os.environ["KAFKA_ENDPOINT"]
-    topic_consume = f'{network}_{os.environ["TOPIC_CONSUME"]}'
-    group_id = os.environ.get('CONSUMER_GROUP', 'group_1')
+
+    parser = argparse.ArgumentParser(description=f'Classify transactions from {network} network')
+    parser.add_argument('--topic_consume', required=False, type=str, help='Topic to consume', default="raw_transactions")
+    parser.add_argument('--consumer_group', required=False, type=str, help='Consumer Group', default="consumer-group-tx-2")
+
+    args = parser.parse_args()
+    topic_consume = f'{network}_{args.topic_consume}'
+    group_id = args.consumer_group
 
     tx_classifier = TransactionClassifier(network)
     kafka_client = KafkaClient(connection_str=kafka_host)

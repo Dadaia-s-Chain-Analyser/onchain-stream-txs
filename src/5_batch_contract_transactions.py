@@ -1,8 +1,9 @@
-import os, logging
+import argparse, os, logging
 from datetime import datetime
-from etherscan_api import EthercanAPI
-from streamer import ChainStreamer
-import argparse
+from azure.identity import DefaultAzureCredential
+from apis.kafka_api import KafkaClient
+from apis.etherscan_api import EthercanAPI
+from apis.azure_key_vault_api import KeyVaultAPI
 
 
 class BatchContractTransactions:
@@ -10,7 +11,6 @@ class BatchContractTransactions:
     def __init__(self, api_key, network, contract_address):
         self.contract_address = contract_address
         self.etherscan_api = EthercanAPI(api_key, network)
-
 
 
     def get_block_interval(self, start_date, end_date=None):
@@ -49,9 +49,16 @@ class BatchContractTransactions:
 
 if __name__ == '__main__':
 
-    api_key = os.environ['SCAN_API_KEY']
     network = os.environ['NETWORK']
     contract_address = os.environ['CONTRACT']
+    kafka_host = os.environ['KAFKA_ENDPOINT']
+    topic_produce = f'{network}_{os.environ["TOPIC_PRODUCE"]}'
+    key_vault_scan_name = os.environ['KEY_VAULT_SCAN_NAME']
+    key_vault_scan_secret = os.environ['KEY_VAULT_SCAN_SECRET']
+
+    credential = DefaultAzureCredential()
+    key_vault_api = KeyVaultAPI(key_vault_scan_name, credential)
+    api_key = key_vault_api.get_secret(key_vault_scan_secret)
 
     parser = argparse.ArgumentParser(description='Batch Smart Contract Transactions')
     parser.add_argument('--start_date', type=str, help='Start Date', default=None)
@@ -62,10 +69,14 @@ if __name__ == '__main__':
     end_date = datetime.strptime(args.end_date, '%Y-%m-%d') if args.end_date else datetime.now()
 
     batch_contract_txs = BatchContractTransactions(api_key, network, contract_address)
+    kafka_client = KafkaClient(connection_str=kafka_host)
+    producer = kafka_client.create_producer()
 
-    for i in batch_contract_txs.open_channel_txs(start_date, end_date):
-        print(len(i))
-
-    #producer = get_kafka_producer()
-    #res = batch_contract_txs(producer, contract_address, block_bottom, block_top)
+    counter = 0
+    for transaction in batch_contract_txs.open_channel_txs(start_date, end_date):
+        for i in transaction:
+            counter += 1
+            if counter % 1000 == 0:
+                print(f"Transactions processed: {counter}")
+            producer.send(topic_produce, i)
 

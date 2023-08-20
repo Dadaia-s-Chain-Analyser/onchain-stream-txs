@@ -1,19 +1,22 @@
 import json, os, argparse
 from functools import lru_cache
+from mother_class import MotherClass
 from web3 import Web3
-from utils.utils import get_node_url
-from pub_sub_api import KafkaClient
+from apis.kafka_api import KafkaClient
+from apis.azure_key_vault_api import KeyVaultAPI
+from azure.identity import DefaultAzureCredential
 
 
-
-class TransactionConverter:
+class TransactionConverter(MotherClass):
 
 
   def __init__(self, network, api_key_node, api_key_scan):
     self.network = network
     self.api_key_node = api_key_node
     self.api_key_scan = api_key_scan
-    vendor_url = get_node_url(network, api_key_node, "alchemy")
+
+    # vendor_url = self.get_node_url(network, api_key_node)
+    vendor_url = self._get_url_node(network, api_key_node)
     self.web3 = Web3(Web3.HTTPProvider(vendor_url))
 
 
@@ -65,18 +68,32 @@ class TransactionConverter:
   
 if __name__ == '__main__':
     network = os.environ["NETWORK"]
-    api_key_node = os.environ['NODE_API_KEY']
-    api_key_scan = os.environ['SCAN_API_KEY']  
     kafka_host = os.environ["KAFKA_ENDPOINT"]
-    topic_consume = f'{network}_{os.environ["TOPIC_CONSUME"]}'
-    group_id = os.environ.get('CONSUMER_GROUP', 'group_1')
+    key_vault_node_name = os.environ['KEY_VAULT_NODE_NAME']
+    key_vault_node_secret = os.environ['KEY_VAULT_NODE_SECRET']
+    key_vault_scan_name = os.environ['KEY_VAULT_SCAN_NAME']
+    key_vault_scan_secret = os.environ['KEY_VAULT_SCAN_SECRET']  
+
+    argparser = argparse.ArgumentParser(description=f'Stream transactions from {network} network')
+
+    argparser.add_argument('--topic_consume', required=False, type=str, help='Topic to consume', default="contract_interaction")
+    argparser.add_argument('--consumer_group', required=False, type=str, help='Consumer Group', default="consumer-group-tx-2")
+
+    args = argparser.parse_args()
+    topic_consume = f'{network}_{args.topic_consume}'
+    group_id = args.consumer_group
+
+
+    credential = DefaultAzureCredential()
+    key_vault_scan_api = KeyVaultAPI(key_vault_scan_name, credential)
+    key_vault_node_api = KeyVaultAPI(key_vault_node_name, credential)
+
+    api_key_scan = key_vault_scan_api.get_secret(key_vault_scan_secret)
+    api_key_node = key_vault_node_api.get_secret(key_vault_node_secret)
 
     kafka_client = KafkaClient(connection_str=kafka_host)
 
     consumer = kafka_client.create_consumer(topic=topic_consume, consumer_group=group_id)
-  # python 4_transaction_converters.py --topic_consume=bsc_contract_interaction --consumer_group=tx_converter
-
-    
 
     tx_converter = TransactionConverter(network, api_key_node, api_key_scan)
     tx_converter.convert_input_transactions(consumer)
