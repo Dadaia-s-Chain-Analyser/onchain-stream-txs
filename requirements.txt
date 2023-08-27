@@ -9,7 +9,10 @@ web3
 aiohttp
 yahoo-fin
 hexbytes
+redis
 azure-eventhub
+azure-cosmos
+azure-mgmt-cosmosdb
 azure-identity
 azure-storage-blob
 azure-data-tables

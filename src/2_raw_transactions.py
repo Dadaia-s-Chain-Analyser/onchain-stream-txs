@@ -59,7 +59,9 @@ if __name__ == '__main__':
 
     credential = DefaultAzureCredential()
     key_vault_api = KeyVaultAPI(key_vault_node_name, credential)
-    api_keys = [key_vault_api.get_secret(f"{key_vault_node_secret}-{i}") for i in range(1, num_partitions + 1)]
+    interval_keys = [int(i) for i in key_vault_node_secret.split("-")[-2:]]
+    name_secret = "-".join(key_vault_node_secret.split("-")[:-2])
+    api_keys = [key_vault_api.get_secret(f"{name_secret}-{i}") for i in range(interval_keys[0], interval_keys[1] + 1)]
 
     kafka_client = KafkaClient(connection_str=kafka_host)
     kafka_client.create_idempotent_topic(topic=topic_consume, num_partitions=num_partitions)

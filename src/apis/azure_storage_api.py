@@ -9,8 +9,9 @@ load_dotenv()
 
 class BlobApi:
 
-    def __init__(self, conn_string):
-        self.blob_service_client = BlobServiceClient.from_connection_string(conn_string)
+    def __init__(self, storage_account, credential):
+        account_url=f"https://{storage_account}.blob.core.windows.net/"
+        self.blob_service_client = BlobServiceClient(account_url, credential=credential)
 
 
     def create_container(self, container_name):
