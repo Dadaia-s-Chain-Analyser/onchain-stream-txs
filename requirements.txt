@@ -10,10 +10,10 @@ aiohttp
 yahoo-fin
 hexbytes
 redis
+azure-identity
+azure-keyvault-secrets
+azure-storage-blob
+azure-data-tables
 azure-eventhub
 azure-cosmos
 azure-mgmt-cosmosdb
-azure-identity
-azure-storage-blob
-azure-data-tables
-azure-keyvault-secrets
