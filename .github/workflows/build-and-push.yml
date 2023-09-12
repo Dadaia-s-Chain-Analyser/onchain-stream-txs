@@ -25,7 +25,7 @@ jobs:
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
 
-    - name: Configurar variável de saída
+    - name: Configurar variável de saída para o nome da imagem
       id: my_step
       run: echo "::set-output name=MINHA_VARIAVEL::${{ secrets.DOCKERHUB_USERNAME }}/dm_structure_stream_chain_txs:$(date +%s)"
 
