@@ -1,5 +1,5 @@
 import argparse, json, os
-from apis.kafka_api import KafkaClient
+from dadaia_tools.kafka_client import KafkaClient
 
 
 class TransactionClassifier:
@@ -23,7 +23,7 @@ class TransactionClassifier:
 
     def classify_transactions(self, topic_consumer):
         for msg in topic_consumer:
-            tx = json.loads(msg.value)
+            tx = msg.value
             topic, transaction = self.__classify_transaction(tx)
             yield topic, transaction
 
@@ -45,7 +45,8 @@ if __name__ == '__main__':
     tx_classifier = TransactionClassifier(network)
     kafka_client = KafkaClient(connection_str=kafka_host)
     producer = kafka_client.create_producer()
-    consumer = kafka_client.create_consumer(topic=topic_consume, consumer_group=group_id)
+    consumer = kafka_client.create_consumer(consumer_group=group_id)
+    consumer.subscribe([topic_consume])
     for topic, transaction in tx_classifier.classify_transactions(consumer):
         kafka_client.send_data(producer, topic, transaction)
         print(f"Transaction sent to {topic}")

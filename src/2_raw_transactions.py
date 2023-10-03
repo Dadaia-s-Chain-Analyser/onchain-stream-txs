@@ -1,11 +1,13 @@
-import json, argparse
+import argparse
 import os, hexbytes
 from web3 import Web3
-from apis.kafka_api import KafkaClient
 from threading import Thread
 from mother_class import MotherClass
-from apis.azure_key_vault_api import KeyVaultAPI
 from azure.identity import DefaultAzureCredential
+
+from dadaia_tools.kafka_client import KafkaClient
+from dadaia_tools.kafka_admin import KafkaAdminAPI
+from dadaia_tools.azure_key_vault_client import KeyVaultAPI
 
 
 class TransactionMiner(MotherClass):
@@ -19,7 +21,7 @@ class TransactionMiner(MotherClass):
 
     def streaming_tx_data(self, topic_consumer):
         for msg in topic_consumer:
-            tx_id = json.loads(msg.value)
+            tx_id = msg.value
             tx_data = self.web3.eth.get_transaction(tx_id)
             tx_data = {k: bytes.hex(v) if type(v) == hexbytes.main.HexBytes else v for k, v in tx_data.items()}
             if tx_data.get("accessList"):
@@ -27,12 +29,12 @@ class TransactionMiner(MotherClass):
             yield tx_data
             
 
-    
+
 def thread_funct(thread_id, api_key, network, kafka_client, topic_consume, group_id, topic_produce):
     transaction_miner = TransactionMiner(network, api_key)
-    kafka_client.create_idempotent_topic(topic=topic_consume, num_partitions=num_partitions)
     producer = kafka_client.create_producer()
-    consumer = kafka_client.create_consumer(topic=topic_consume, consumer_group=group_id)
+    consumer = kafka_client.create_consumer(consumer_group=group_id)
+    consumer.subscribe([topic_consume])
     for data in transaction_miner.streaming_tx_data(consumer):
         kafka_client.send_data(producer, topic_produce, data)
         print(f"Process {thread_id}: transaction sent")
@@ -57,17 +59,20 @@ if __name__ == '__main__':
     num_partitions = args.num_partitions
     topic_produce = f'{network}_{args.topic_produce}'
 
+
+    kafka_admin = KafkaAdminAPI(connection_str=kafka_host)
+    kafka_admin.create_idempotent_topic(topic_name=topic_consume, topic_config={"num_partitions": num_partitions})
+    kafka_admin.create_idempotent_topic(topic_name=topic_produce)
+
+
     credential = DefaultAzureCredential()
     key_vault_api = KeyVaultAPI(key_vault_node_name, credential)
     interval_keys = [int(i) for i in key_vault_node_secret.split("-")[-2:]]
     name_secret = "-".join(key_vault_node_secret.split("-")[:-2])
     api_keys = [key_vault_api.get_secret(f"{name_secret}-{i}") for i in range(interval_keys[0], interval_keys[1] + 1)]
-
     kafka_client = KafkaClient(connection_str=kafka_host)
-    kafka_client.create_idempotent_topic(topic=topic_consume, num_partitions=num_partitions)
-    kafka_client.create_idempotent_topic(topic=topic_produce)
-
     thread_funct_fixed_args = [network, kafka_client, topic_consume, consumer_group, topic_produce]
+
     for thread_id in range(len(api_keys)):
         thread = Thread(target=thread_funct, args=(thread_id + 1, api_keys[thread_id], *thread_funct_fixed_args))
         thread.start()
