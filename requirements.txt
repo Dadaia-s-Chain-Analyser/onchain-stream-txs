@@ -9,3 +9,5 @@ aiohttp
 hexbytes
 azure-identity
 dadaia-tools
+kafka-python
+confluent-kafka
