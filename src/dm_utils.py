@@ -1,3 +1,4 @@
+from hashlib import sha256
 from hexbytes import HexBytes
 
 
@@ -15,3 +16,6 @@ class DataMasterUtils:
                     except ValueError:
                         pass
 
+
+    @staticmethod
+    def hash(data): sha256(data.encode()).hexdigest()[-32:]

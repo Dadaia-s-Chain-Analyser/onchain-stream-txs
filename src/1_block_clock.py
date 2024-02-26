@@ -15,14 +15,14 @@ from dadaia_tools.azure_key_vault_client import KeyVaultAPI
 from azure.identity import DefaultAzureCredential
 
 
-class BlockMiner(BlockchainNodeAsAServiceConnector):
+class MinedBlocksProcessor(BlockchainNodeAsAServiceConnector):
 
     def __init__(self, network, api_key_node, tx_threshold=None, frequency=1, kv_secret_name=None):
         self.tx_threshold = tx_threshold
         self.frequency = float(frequency)
         self.counter = 0
         self.kv_secret_name = kv_secret_name
-        self.web3 = self.get_node_connection(network, api_key_node, 'alchemy')
+        self.web3 = self._get_node_connection(network, api_key_node, 'alchemy')
 
 
     def __get_latest_block(self):
@@ -93,30 +93,31 @@ if __name__ == '__main__':
     api_key_node = key_vault_api.get_secret(akv_secret_name)
 
     # Configurando producers relativos a: block_metadata, hash_txs e logs
-    make_topic_name = lambda topic: f"{network}.{dict(config[topic])['topic']}"
-    producer_block_metadata = Producer(**config['kafka.cluster'], **config['producer.block_metadata'])
-    producer_hash_txs = Producer(**config['kafka.cluster'], **config['producer.hash_txs'])
-    producer_logs = Producer(**config['kafka.cluster'], **config['producer.logs.block_clock'])
+    create_producer = lambda special_config: Producer(**config['producer.general.config'], **config[special_config])
+    producer_block_metadata = create_producer('producer.block_metadata')
+    producer_hash_txs = create_producer('producer.hash_txs')
+    producer_logs = create_producer('producer.logs.block_clock')
 
     # Obter nome dos tópicos a partir do arquivo de configuração
-    topic_logs = make_topic_name('topic.logs.clock')
-    topic_name_block_metadata = make_topic_name('topic.block_metadata')
-    topic_name_block_hash_txs = make_topic_name('topic.hash_txs')
+    make_topic_name = lambda topic: f"{network}.{dict(config[topic])['topic']}"
+    topic_out_logs = make_topic_name('topic.app.logs')
+    topic_out_block_metadata = make_topic_name('topic.block_metadata')
+    topic_out_block_hash_txs = make_topic_name('topic.hash_txs')
     topic_num_partitions_hash_txs = dict(config['topic.hash_txs'])['num_partitions']
    
     # Configurando Logging
-    logger = logging.getLogger("")
+    logger = logging.getLogger("app-block-clock")
     logger.setLevel(logging.INFO)
-    kafka_handler = KafkaLoggingHandler(producer_logs, topic_logs)
+    kafka_handler = KafkaLoggingHandler(producer_logs, topic_out_logs)
     ConsoleLoggingHandler = ConsoleLoggingHandler()
     logger.addHandler(ConsoleLoggingHandler)
     logger.addHandler(kafka_handler)
 
-    # Inicializa ingestão de blocos e hash_id de suas respectivas transações
-    block_miner = BlockMiner(network, api_key_node, args.tx_threshold, args.frequency, akv_secret_name)
+    # Inicializa processo de streaming com Source = mined block event -> process -> Sinks = (block_metadata,raw_txs)
+    block_miner = MinedBlocksProcessor(network, api_key_node, args.tx_threshold, args.frequency, akv_secret_name)
     for block_data in block_miner.streaming_block_data():
         encoded_message = json.dumps(block_data).encode('utf-8')
-        producer_block_metadata.produce(topic_name_block_metadata, value=encoded_message)
+        producer_block_metadata.produce(topic_out_block_metadata, value=encoded_message)
         producer_block_metadata.flush()
         logger.info(f"tx_read;{len(block_data['transactions'])};{block_data['number']}")
         counter = 0
@@ -125,7 +126,7 @@ if __name__ == '__main__':
             partition = counter % int(topic_num_partitions_hash_txs)
             counter += 1
             counter = 0 if counter == int(topic_num_partitions_hash_txs) else counter
-            producer_hash_txs.produce(topic=topic_name_block_hash_txs, value=tx_data, partition=partition)
+            producer_hash_txs.produce(topic=topic_out_block_hash_txs, value=tx_data, partition=partition)
         producer_hash_txs.flush()
         logger.info(f"tx_sent;{len(transactions)};{block_data['number']}")
 
