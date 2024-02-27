@@ -71,7 +71,7 @@ if __name__ == "__main__":
     topics_maker.make_topic_from_configs('topic.txs.native_token_transfer')
     topics_maker.make_topic_from_configs('topic.txs.contract_interaction')
     topics_maker.make_topic_from_configs('topic.txs.contract_deployment')
-    topics_maker.make_topic_from_configs('topic.application.logs', use_network=False)
+    topics_maker.make_topic_from_configs('topic.application.logs')
 
     special_config = config['topic.shared.api_keys.config']
     topics_maker.make_topic_from_configs('topic.shared.api_keys', special_config=special_config, use_network=False)
