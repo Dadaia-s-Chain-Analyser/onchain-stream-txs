@@ -7,8 +7,8 @@ import os
 import time
 from configparser import ConfigParser
 from requests import HTTPError
-from dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
-from dm_BNaaS_connector import BlockchainNodeAsAServiceConnector
+from dm_utilities.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
+from dm_utilities.dm_BNaaS_connector import BlockchainNodeAsAServiceConnector
 from confluent_kafka import Producer
 from dadaia_tools.azure_key_vault_client import KeyVaultAPI
 from azure.identity import DefaultAzureCredential
@@ -19,7 +19,7 @@ class MinedBlocksProcessor(BlockchainNodeAsAServiceConnector):
   def __init__(self, network, logger, api_key_node, akv_secret_name):
     self.logger = logger
     self.kv_secret_name = akv_secret_name
-    self.web3 = self._get_node_connection(network, api_key_node, 'alchemy')
+    self.web3 = self.get_node_connection(network, api_key_node, 'alchemy')
 
 
   def __get_latest_block(self):

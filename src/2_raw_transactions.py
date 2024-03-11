@@ -11,9 +11,9 @@ from confluent_kafka import Producer, Consumer
 from confluent_kafka.error import KafkaError, KafkaException
 from configparser import ConfigParser
 
-from dm_utils import DataMasterUtils
-from dm_BNaaS_connector import BlockchainNodeAsAServiceConnector
-from dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
+from dm_utilities.dm_utils import DataMasterUtils
+from dm_utilities.dm_BNaaS_connector import BlockchainNodeAsAServiceConnector
+from dm_utilities.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
 
 
 class RawTransactionsProcessor(BlockchainNodeAsAServiceConnector):
@@ -22,7 +22,7 @@ class RawTransactionsProcessor(BlockchainNodeAsAServiceConnector):
     self.network = network
     self.api_key = api_key
     self.akv_secret_name = akv_secret_name
-    self.web3 = self._get_node_connection(network, api_key, vendor)
+    self.web3 = self.get_node_connection(network, api_key, vendor)
     self.utils = DataMasterUtils()
     self.logger = logger
 

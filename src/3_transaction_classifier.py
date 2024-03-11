@@ -2,7 +2,7 @@ import argparse, json, os
 import logging
 from configparser import ConfigParser
 from confluent_kafka import Consumer, Producer
-from dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
+from dm_utilities.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
 
 
 class TransactionClassifier:
