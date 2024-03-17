@@ -11,3 +11,4 @@ azure-identity
 dadaia-tools
 kafka-python
 confluent-kafka
+cassandra-driver
