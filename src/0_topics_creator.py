@@ -21,7 +21,7 @@ class TopicCreator:
                        overwrite=False,
                        use_network=True
         ):
-        kafka_admin = KafkaAdminClient(bootstrap_servers=self.cluster_info['bootstrap_servers'])
+        kafka_admin = KafkaAdminClient(bootstrap_servers=self.cluster_info['bootstrap.servers'])
         name = f"{self.network}.{name}" if use_network else name
         topic = NewTopic(
             name=name,
