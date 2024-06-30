@@ -64,7 +64,7 @@ if __name__ == '__main__':
 
   # Inicializa processo de streaming com Source = mined block event -> process -> Sinks = (block_metadata,raw_txs)
   tx_classifier = TransactionClassifier(network)
-  map_topics = {'1': topic_out_nt_transfer, '2': topic_out_sc_deployment, '3': topic_out_sc_interaction}
+  map_topics = {'1': topic_out_sc_deployment, '2': topic_out_nt_transfer, '3': topic_out_sc_interaction}
   try:
     for msg in tx_classifier.consuming_topic(consumer_txs_hash):
       tx_data, topic = tx_classifier.process_msg(msg, map_topics)

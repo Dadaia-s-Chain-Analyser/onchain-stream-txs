@@ -59,20 +59,23 @@ if __name__ == "__main__":
     network = os.environ["NETWORK"]
     parser = ArgumentParser(description=f'Stream transactions network')
     parser.add_argument('config_file', type=FileType('r'), help='Config file')
+    parser.add_argument('--overwrite', type=bool, default=False, help='Network')
     args = parser.parse_args()
     config = ConfigParser()
     config.read_file(args.config_file)
+    overwrite = args.overwrite
+
     cluster_info = dict(config['kafka.cluster'])
 
-    topics_maker = TopicCreator(network, config, cluster_info)
-    topics_maker.make_topic_from_configs('topic.block_metadata')
-    topics_maker.make_topic_from_configs('topic.hash_txs')
-    topics_maker.make_topic_from_configs('topic.raw_txs')
-    topics_maker.make_topic_from_configs('topic.txs.native_token_transfer')
-    topics_maker.make_topic_from_configs('topic.txs.contract_interaction')
-    topics_maker.make_topic_from_configs('topic.txs.contract_deployment')
-    topics_maker.make_topic_from_configs('topic.application.logs')
 
-    special_config = config['topic.shared.api_keys.config']
-    topics_maker.make_topic_from_configs('topic.shared.api_keys', special_config=special_config, use_network=False)
+
+    topics_maker = TopicCreator(network, config, cluster_info)
+    topics_maker.make_topic_from_configs('topic.block_metadata', overwrite=overwrite)
+    topics_maker.make_topic_from_configs('topic.hash_txs', overwrite=overwrite)
+    topics_maker.make_topic_from_configs('topic.raw_txs', overwrite=overwrite)
+    topics_maker.make_topic_from_configs('topic.txs.native_token_transfer', overwrite=overwrite)
+    topics_maker.make_topic_from_configs('topic.txs.contract_interaction', overwrite=overwrite)
+    topics_maker.make_topic_from_configs('topic.txs.contract_deployment', overwrite=overwrite)
+    topics_maker.make_topic_from_configs('topic.application.logs', overwrite=overwrite)
+
 

@@ -7,9 +7,9 @@ from dadaia_tools.azure_key_vault_client import KeyVaultAPI
 from dadaia_tools.etherscan_client import EthercanAPI
 from azure.identity import DefaultAzureCredential
 from configparser import ConfigParser
-from dm_utils import DataMasterUtils
-from dm_BNaaS_connector import BlockchainNodeAsAServiceConnector
-from dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
+from dm_utilities.dm_utils import DataMasterUtils
+from dm_utilities.dm_BNaaS_connector import BlockchainNodeAsAServiceConnector
+from dm_utilities.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
 
 
 class TransactionConverter(BlockchainNodeAsAServiceConnector):
@@ -18,7 +18,7 @@ class TransactionConverter(BlockchainNodeAsAServiceConnector):
   def __init__(self, network, api_key_node, ethercan_api):
     self.network = network
     self.etherscan_api = ethercan_api
-    self.web3 = self._get_node_connection(network, api_key_node, 'alchemy')
+    self.web3 = self.get_node_connection(network, api_key_node, 'alchemy')
 
 
   @lru_cache(maxsize=None)
@@ -97,15 +97,18 @@ if __name__ == '__main__':
 
   ethercan_api = EthercanAPI(api_key_scan, network)
   tx_converter = TransactionConverter(network, api_key_node, ethercan_api)
-  MONITORED_ADDR = ['0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D']
+  MONITORED_ADDR = ['0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D',
+                    '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+                    '0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9',
+                    '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'
+                    ]
 
   
   for tx_data in tx_converter.consuming_topic(consumer_txs_sc_int):
     contract_address = tx_data['to']
     input_data = tx_data['input']
     if contract_address in MONITORED_ADDR:
-      input_data = tx_converter.decode_input(contract_address, input_data)
-      print("MONITORED", input_data)
+      converted_input_data = tx_converter.decode_input(contract_address, input_data)
+      print("MONITORED", converted_input_data)
     else: 
-      input_data = tx_converter.decode_input(contract_address, input_data)
-      print("NON MONITORED", input_data)
+      continue
