@@ -73,6 +73,8 @@ if __name__ == '__main__':
   network = os.environ["NETWORK"]
   akv_node_name = os.environ['KEY_VAULT_NODE_NAME']
   akv_secret_name = os.environ['KEY_VAULT_NODE_SECRET']
+  KAFKA_BROKER = os.getenv("KAFKA_CLUSTER", "broker:29092")
+  bootstrap_servers = {'bootstrap.servers': KAFKA_BROKER}
   
   # Configuração de argumentos a serem passados via linha de comando e leitura do arquivo de configuração
   parser = argparse.ArgumentParser(description=f'Streaming de blocos minerados na rede EVM {network}')
@@ -89,10 +91,10 @@ if __name__ == '__main__':
   api_key_node = key_vault_api.get_secret(akv_secret_name)
 
   # Configurando producers relativos a: block_metadata, hash_txs e logs
-  create_producer = lambda special_config: Producer(**config['producer.general.config'], **config[special_config])
+  create_producer = lambda special_config: Producer(**bootstrap_servers, **config['producer.general.config'], **config[special_config])
   producer_block_metadata = create_producer('producer.block_metadata')
   producer_hash_txs = create_producer('producer.hash_txs')
-  producer_logs = create_producer('producer.logs.block_clock')
+  producer_logs = create_producer('producer.logs.application')
 
   # Obter nome dos tópicos a partir do arquivo de configuração
   make_topic_name = lambda topic: f"{network}.{dict(config[topic])['topic']}"

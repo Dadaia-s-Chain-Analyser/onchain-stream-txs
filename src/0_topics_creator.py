@@ -7,10 +7,10 @@ from configparser import ConfigParser
 
 class TopicCreator:
 
-    def __init__(self, network, config, cluster_info):
+    def __init__(self, network, config, bootstrap_servers):
         self.network = network
         self.config = config
-        self.cluster_info = cluster_info
+        self.bootstrap_servers = bootstrap_servers
 
 
     def __create_topic(self, 
@@ -21,7 +21,7 @@ class TopicCreator:
                        overwrite=False,
                        use_network=True
         ):
-        kafka_admin = KafkaAdminClient(bootstrap_servers=self.cluster_info['bootstrap.servers'])
+        kafka_admin = KafkaAdminClient(bootstrap_servers=self.bootstrap_servers)
         name = f"{self.network}.{name}" if use_network else name
         topic = NewTopic(
             name=name,
@@ -65,11 +65,11 @@ if __name__ == "__main__":
     config.read_file(args.config_file)
     overwrite = args.overwrite
 
-    cluster_info = dict(config['kafka.cluster'])
+    bootstrap_servers = os.getenv("KAFKA_CLUSTER", "broker:29092")
 
 
 
-    topics_maker = TopicCreator(network, config, cluster_info)
+    topics_maker = TopicCreator(network, config, bootstrap_servers)
     topics_maker.make_topic_from_configs('topic.block_metadata', overwrite=overwrite)
     topics_maker.make_topic_from_configs('topic.hash_txs', overwrite=overwrite)
     topics_maker.make_topic_from_configs('topic.raw_txs', overwrite=overwrite)
