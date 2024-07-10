@@ -1,24 +1,30 @@
-import json, os, argparse
+import argparse
+import json
+import logging
+import os
+
+
 from functools import lru_cache
 from json.decoder import JSONDecodeError
 from web3 import Web3
 from confluent_kafka import Producer, Consumer
-from dadaia_tools.azure_key_vault_client import KeyVaultAPI
+from azure.keyvault.secrets import SecretClient
 from dadaia_tools.etherscan_client import EthercanAPI
 from azure.identity import DefaultAzureCredential
 from configparser import ConfigParser
-from dm_utilities.dm_utils import DataMasterUtils
-from dm_utilities.dm_BNaaS_connector import BlockchainNodeAsAServiceConnector
-from dm_utilities.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
+
+from utils.dm_utils import DataMasterUtils
+from utils.blockchain_node_connector import BlockchainNodeConnector
+from utils.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
 
 
-class TransactionConverter(BlockchainNodeAsAServiceConnector):
+class TransactionConverter(BlockchainNodeConnector):
 
 
-  def __init__(self, network, api_key_node, ethercan_api):
-    self.network = network
+  def __init__(self, logger, network, akv_client, api_key_node_name, ethercan_api):
+    super().__init__(logger, akv_client, network)
     self.etherscan_api = ethercan_api
-    self.web3 = self.get_node_connection(network, api_key_node, 'alchemy')
+    self.web3 = super().get_node_connection(api_key_node_name, 'alchemy')
 
 
   @lru_cache(maxsize=None)
@@ -59,16 +65,26 @@ class TransactionConverter(BlockchainNodeAsAServiceConnector):
 
 if __name__ == '__main__':
     
-  network = os.environ["NETWORK"]
-  key_vault_node_name = os.environ['KEY_VAULT_NODE_NAME']
-  key_vault_node_secret = os.environ['KEY_VAULT_NODE_SECRET']
-  key_vault_scan_name = os.environ['KEY_VAULT_SCAN_NAME']
-  key_vault_scan_secret = os.environ['KEY_VAULT_SCAN_SECRET']
+  APP_NAME = "TRANSACTION_INPUT_CONVERSOR"
+  NETWORK = os.environ["NETWORK"]
+  KAFKA_BROKERS = {'bootstrap.servers': os.getenv("KAFKA_BROKERS")}
+  TOPIC_LOGS = os.getenv('TOPIC_LOGS')
+  TOPIC_TX_CONTRACT_CALL = os.getenv('TOPIC_TX_CONTRACT_CALL')
+  TOPIC_TX_CONTRACT_CALL_DECODED = os.getenv('TOPIC_TX_CONTRACT_CALL_DECODED')
+  SCHEMA_REGISTRY_URL = os.getenv('SCHEMA_REGISTRY_URL')
+  AKV_NODE_NAME = os.getenv('AKV_NODE_NAME')
+  AKV_SCAN_NAME = os.getenv('AKV_SCAN_NAME')
+  AKV_NODE_SECRET_NAME = os.getenv('AKV_NODE_SECRET_NAME')
+  AKV_SCAN_SECRET_NAME = os.getenv('AKV_SCAN_SECRET_NAME')
+
   credential = DefaultAzureCredential()
-  key_vault_scan_api = KeyVaultAPI(key_vault_scan_name, credential)
-  key_vault_node_api = KeyVaultAPI(key_vault_node_name, credential)
-  api_key_scan = key_vault_scan_api.get_secret(key_vault_scan_secret)
-  api_key_node = key_vault_node_api.get_secret(key_vault_node_secret)
+  AKV_NODE_URL = f'https://{AKV_NODE_NAME}.vault.azure.net/'
+  AKV_NODE_CLIENT = SecretClient(vault_url=AKV_NODE_URL, credential=DefaultAzureCredential())
+
+  AKV_SCAN_URL = f'https://{AKV_SCAN_NAME}.vault.azure.net/'
+  AKV_SCAN_CLIENT = SecretClient(vault_url=AKV_SCAN_URL, credential=DefaultAzureCredential())
+
+  api_key_scan = AKV_SCAN_CLIENT.get_secret(AKV_SCAN_SECRET_NAME)
 
   parser = argparse.ArgumentParser(description=f'Stream cleaned transactions network')
   parser.add_argument('config_producer', type=argparse.FileType('r'), help='Config Producers')
@@ -79,36 +95,37 @@ if __name__ == '__main__':
   config = ConfigParser()
   config.read_file(args.config_producer)
   config.read_file(args.config_consumer)
-
-  # Nome de tópicos provenientes do arquivo de configuração
-  make_topic_name = lambda topic: f"{network}.{dict(config[topic])['topic']}"
-  topic_in_raw_txs = make_topic_name('topic.raw_txs')
-  topic_in_sc_interaction = make_topic_name('topic.tx.contract_interaction')
-  topic_out_parsed_input = make_topic_name('topic.txs.input.decoded')
-  topic_out_logs = make_topic_name('topic.app.logs')
-
+  
   # Criação de 1 consumer para o tópico de hash_txs e 1 producer para o tópico de raw_txs
-  create_producer = lambda special_config: Producer(**config['producer.general.config'], **config[special_config])
-  producer_logs = create_producer('producer.logs.block_clock')
+  create_producer = lambda special_config: Producer(**KAFKA_BROKERS, **config['producer.general.config'], **config[special_config])
+  PRODUCER_LOGS = create_producer('producer.logs.application')
   producer_parsed_input_txs = create_producer('producer.txs.input.decoded')
-  consumer_txs_sc_int = Consumer(**config['consumer.general.config'], **config['consumer.txs.contract_interaction'])
-  consumer_txs_sc_int.subscribe([topic_in_raw_txs])
+  CONSUMER_TX_CONTRACT_CALL = Consumer(**KAFKA_BROKERS, **config['consumer.txs.contract_interaction'])
+  CONSUMER_TX_CONTRACT_CALL.subscribe([TOPIC_TX_CONTRACT_CALL])
+
+  # Configurando Logging para console e Kafka
+  LOGGER = logging.getLogger(APP_NAME)
+  LOGGER.setLevel(logging.INFO)
+  kafka_handler = KafkaLoggingHandler(PRODUCER_LOGS, TOPIC_LOGS)
+  ConsoleLoggingHandler = ConsoleLoggingHandler()
+  LOGGER.addHandler(ConsoleLoggingHandler)
+  LOGGER.addHandler(kafka_handler)
 
 
-  ethercan_api = EthercanAPI(api_key_scan, network)
-  tx_converter = TransactionConverter(network, api_key_node, ethercan_api)
+  ethercan_api = EthercanAPI(api_key_scan, NETWORK)
+  TRANSACTION_CONVERTER = TransactionConverter(LOGGER, NETWORK, AKV_NODE_CLIENT, AKV_NODE_SECRET_NAME, ethercan_api)
+
   MONITORED_ADDR = ['0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D',
                     '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
                     '0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9',
                     '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'
                     ]
-
-  
-  for tx_data in tx_converter.consuming_topic(consumer_txs_sc_int):
+  for tx_data in TRANSACTION_CONVERTER.consuming_topic(CONSUMER_TX_CONTRACT_CALL):
     contract_address = tx_data['to']
     input_data = tx_data['input']
+    print(contract_address, input_data)
     if contract_address in MONITORED_ADDR:
-      converted_input_data = tx_converter.decode_input(contract_address, input_data)
+      converted_input_data = TRANSACTION_CONVERTER.decode_input(contract_address, input_data)
       print("MONITORED", converted_input_data)
-    else: 
+    else:
       continue

@@ -1,53 +1,89 @@
 import argparse
-import datetime as dt
 import hexbytes
 import json
 import logging
 import os
 import time
+import datetime as dt
+
 from configparser import ConfigParser
 from requests import HTTPError
-from dm_utilities.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
-from dm_utilities.dm_BNaaS_connector import BlockchainNodeAsAServiceConnector
-from confluent_kafka import Producer
-from dadaia_tools.azure_key_vault_client import KeyVaultAPI
+from confluent_kafka import SerializingProducer, Producer
+from confluent_kafka.serialization import StringSerializer
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroSerializer
+
 from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+
+from utils.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
+from utils.blockchain_node_connector import BlockchainNodeConnector
+from utils.kafka_handlers import SuccessHandler, ErrorHandler
 
 
-class MinedBlocksProcessor(BlockchainNodeAsAServiceConnector):
+class MinedBlocksProcessor(BlockchainNodeConnector):
 
-  def __init__(self, network, logger, api_key_node, akv_secret_name):
-    self.logger = logger
-    self.kv_secret_name = akv_secret_name
-    self.web3 = self.get_node_connection(network, api_key_node, 'alchemy')
+  def __init__(self, network, logger, akv_client, api_key_name, schema_registry_url):
+    super().__init__(logger, akv_client, network)
+    self.schema_registry_url = schema_registry_url
+    self.web3 = super().get_node_connection(api_key_name, 'alchemy')
+    self.api_key_name = api_key_name
 
 
   def __get_latest_block(self):
     try:
       block_info = self.web3.eth.get_block('latest')
-      self.logger.info(f"API_request;{self.kv_secret_name}")
+      self.logger.info(f"API_request;{self.api_key_name}")
       return block_info
     except HTTPError as e:
-      self.logger.error(f"API_request;{self.kv_secret_name};Error:{str(e)}")
-      if str(e)[:3] == '429': return
+      self.logger.error(f"API_request;{self.api_key_name};Error:{str(e)}")
       return
+    
+  def __get_block_clock_avro_schema(self):
+    with open('schemas/block_metadata_avro.json') as f:
+      return json.load(f) 
+  
 
-  def __parse_block_data(self, block):
-    block_data = {k: v for k, v in block.items() if k not in ('transactions', 'withdrawals')}
-    transactions = [bytes.hex(i) for i in block['transactions']]
-    block_data['transactions'] = transactions
-    block_data = {k: bytes.hex(v) if type(v) == hexbytes.main.HexBytes else v for k, v in block_data.items()}
-    withdrawals = [dict(i) for i in block['withdrawals']]
-    block_data['withdrawals'] = withdrawals
-    block_data['totalDifficulty'] = str(block_data['totalDifficulty'])
-    return block_data
+  def create_serializable_producer(self, producer_configs) -> SerializingProducer:
+    schema_registry_conf = {'url': self.schema_registry_url}
+    schema_registry_client = SchemaRegistryClient(schema_registry_conf)
+    avro_schema = json.dumps(self.__get_block_clock_avro_schema())
+    avro_serializer = AvroSerializer(
+      schema_registry_client,
+      avro_schema,
+      lambda msg, ctx: dict(msg)
+    )
+    producer_configs['key.serializer'] = StringSerializer('utf_8')
+    producer_configs['value.serializer'] = avro_serializer
+    return SerializingProducer(producer_configs)
+
+
+  def parse_to_block_clock_schema(self, block_raw_data):
+    return {
+      "number": block_raw_data['number'],
+      "timestamp": block_raw_data['timestamp'],
+      "hash": bytes.hex(block_raw_data['hash']),
+      "parentHash": bytes.hex(block_raw_data['parentHash']),
+      "difficulty": block_raw_data['difficulty'],
+      "totalDifficulty": str(block_raw_data['totalDifficulty']),
+      "nonce": bytes.hex(block_raw_data['nonce']),
+      "size": block_raw_data['size'],
+      "miner": block_raw_data['miner'],
+      "baseFeePerGas": block_raw_data['baseFeePerGas'],
+      "gasLimit": block_raw_data['gasLimit'],
+      "gasUsed": block_raw_data['gasUsed'],
+      "logsBloom": bytes.hex(block_raw_data['logsBloom']),
+      "extraData": bytes.hex(block_raw_data['extraData']),
+      "transactionsRoot": bytes.hex(block_raw_data['transactionsRoot']),
+      "stateRoot": bytes.hex(block_raw_data['stateRoot']),
+      "transactions": [bytes.hex(i) for i in block_raw_data['transactions']],
+      "withdrawals": [dict(i) for i in block_raw_data['withdrawals']]
+    }
+
 
   def limit_transactions(self, block_data, threshold):
-    """Limita o número de transações por bloco de acordo com o valor de tx_threshold
-    Usado para limitar o número de requisições a API em testes
-    """
-    return block_data["transactions"] if threshold == 0 \
-                    else block_data["transactions"][:threshold]
+    if threshold == 0: return block_data["transactions"]
+    else: return block_data["transactions"][:threshold]
   
 
   def streaming_block_data(self, frequency):
@@ -61,70 +97,84 @@ class MinedBlocksProcessor(BlockchainNodeAsAServiceConnector):
       actual_block = self.__get_latest_block()
       if not actual_block: continue
       if actual_block != previous_block:
-        block_data = self.__parse_block_data(actual_block)
-        yield block_data
+        yield actual_block
         previous_block = actual_block
       time.sleep(float(frequency))
 
 
+  def message_handler(self, err, msg):
+    if err is not None: ErrorHandler(self.logger)(err)
+    else: SuccessHandler(self.logger)(msg)
+
+
 if __name__ == '__main__':
     
-  # Leitura de variáveis de ambiente
-  network = os.environ["NETWORK"]
-  akv_node_name = os.environ['KEY_VAULT_NODE_NAME']
-  akv_secret_name = os.environ['KEY_VAULT_NODE_SECRET']
-  KAFKA_BROKER = os.getenv("KAFKA_CLUSTER", "broker:29092")
-  bootstrap_servers = {'bootstrap.servers': KAFKA_BROKER}
-  
+  APP_NAME = "BLOCK_CLOCK_APP"
+
+  KAFKA_BROKERS = {'bootstrap.servers': os.getenv("KAFKA_BROKERS")} 
+  SCHEMA_REGISTRY_URL = os.getenv("SCHEMA_REGISTRY_URL")
+  TOPIC_LOGS = os.getenv("TOPIC_LOGS")
+  TOPIC_BLOCK_METADATA = os.getenv("TOPIC_BLOCK_METADATA")
+  TOPIC_TX_HASH_IDS = os.getenv("TOPIC_TX_HASH_IDS")
+  TOPIC_TX_HASH_IDS_PARTITIONS = int(os.getenv("TOPIC_TX_HASH_IDS_PARTITIONS", 1))
+
+  NETWORK = os.getenv("NETWORK")
+  TXS_PER_BLOCK = int(os.getenv("TXS_PER_BLOCK", 8))
+  CLOCK_FREQUENCY = float(os.getenv("CLOCK_FREQUENCY", 1))
+  AKV_NAME = os.getenv('AKV_NAME')
+  AKV_SECRET_NAME = os.getenv('AKV_SECRET_NAME')
+
   # Configuração de argumentos a serem passados via linha de comando e leitura do arquivo de configuração
-  parser = argparse.ArgumentParser(description=f'Streaming de blocos minerados na rede EVM {network}')
+  parser = argparse.ArgumentParser(description=f'Streaming de blocos minerados na rede {NETWORK}')
   parser.add_argument('config_producer', type=argparse.FileType('r'), help='Configurações de producers')
-  parser.add_argument('--frequency', type=float, help='Frequência de clock', default=1)
-  parser.add_argument('--tx_threshold', type=int, help='Limite transações por bloco', default=8)
   args = parser.parse_args()
   config = ConfigParser()
   config.read_file(args.config_producer)
 
-  # Obtendo API Key do Azure Key Vault
-  credential = DefaultAzureCredential()
-  key_vault_api = KeyVaultAPI(akv_node_name, credential)
-  api_key_node = key_vault_api.get_secret(akv_secret_name)
+  AKV_URL = f'https://{AKV_NAME}.vault.azure.net/'
+  AKV_CLIENT = SecretClient(vault_url=AKV_URL, credential=DefaultAzureCredential())
 
   # Configurando producers relativos a: block_metadata, hash_txs e logs
-  create_producer = lambda special_config: Producer(**bootstrap_servers, **config['producer.general.config'], **config[special_config])
-  producer_block_metadata = create_producer('producer.block_metadata')
-  producer_hash_txs = create_producer('producer.hash_txs')
-  producer_logs = create_producer('producer.logs.application')
-
-  # Obter nome dos tópicos a partir do arquivo de configuração
-  make_topic_name = lambda topic: f"{network}.{dict(config[topic])['topic']}"
-  topic_out_logs = make_topic_name('topic.app.logs')
-  topic_out_block_metadata = make_topic_name('topic.block_metadata')
-  topic_out_block_hash_txs = make_topic_name('topic.hash_txs')
-  topic_num_partitions_hash_txs = dict(config['topic.hash_txs'])['num_partitions']
+  create_simple_producer = lambda special_config: Producer(
+    **KAFKA_BROKERS,
+    **config['producer.general.config'],
+    **config[special_config]
+    )
+  
+  LOGS_PRODUCER = create_simple_producer('producer.logs.application')
+  HASH_TXS_ID_PRODUCER = create_simple_producer('producer.hash_txs')
   
   # Configurando Logging
-  logger = logging.getLogger("app-block-clock")
-  logger.setLevel(logging.INFO)
-  kafka_handler = KafkaLoggingHandler(producer_logs, topic_out_logs)
+  LOGGER = logging.getLogger(APP_NAME)
+  LOGGER.setLevel(logging.INFO)
+  kafka_handler = KafkaLoggingHandler(LOGS_PRODUCER, TOPIC_LOGS)
   ConsoleLoggingHandler = ConsoleLoggingHandler()
-  logger.addHandler(ConsoleLoggingHandler)
-  logger.addHandler(kafka_handler)
+  LOGGER.addHandler(ConsoleLoggingHandler)
+  LOGGER.addHandler(kafka_handler)
+  
+  LOGGER.info(f"Starting {APP_NAME} application")
+  LOGGER.info(f"NETWORK={NETWORK};TXS_PER_BLOCK={TXS_PER_BLOCK};CLOCK_FREQUENCY={CLOCK_FREQUENCY}")
+  LOGGER.info(f"KAFKA_BROKERS={KAFKA_BROKERS}")
+  LOGGER.info(f"TOPIC_LOGS={TOPIC_LOGS}")
+  LOGGER.info(f"TOPIC_BLOCK_METADATA={TOPIC_BLOCK_METADATA}")
+  LOGGER.info(f"TOPIC_TX_HASH_IDS={TOPIC_TX_HASH_IDS}")
 
-  # Inicializa processo de streaming com Source = mined block event -> process -> Sinks = (block_metadata,raw_txs)
-  block_miner = MinedBlocksProcessor(network, logger, api_key_node, akv_secret_name)
+  BLOCK_MINER = MinedBlocksProcessor(NETWORK, LOGGER, AKV_CLIENT, AKV_SECRET_NAME, SCHEMA_REGISTRY_URL)
+  BLOCK_METADATA_PRODUCER = BLOCK_MINER.create_serializable_producer(
+    {**KAFKA_BROKERS, **config['producer.general.config'], **config['producer.block_metadata']}
+  )
 
-  for block_data in block_miner.streaming_block_data(args.frequency):
-    encoded_message = json.dumps(block_data).encode('utf-8')
-    producer_block_metadata.produce(topic_out_block_metadata, value=encoded_message)
-    producer_block_metadata.flush()
-    logger.info(f"mined_block_ingested;{len(block_data['transactions'])};{block_data['number']}")
-    counter = 0
-    transactions = block_miner.limit_transactions(block_data, args.tx_threshold)
-    for tx_data in transactions:
-      partition = counter % int(topic_num_partitions_hash_txs)
-      counter += 1
-      counter = 0 if counter == int(topic_num_partitions_hash_txs) else counter
-      producer_hash_txs.produce(topic=topic_out_block_hash_txs, value=tx_data, partition=partition)
-    producer_hash_txs.flush()
-    logger.info(f"hash_id_txs_ingested;{len(transactions)};{block_data['number']}")
+
+  for raw_block_data in BLOCK_MINER.streaming_block_data(CLOCK_FREQUENCY):
+    cleaned_block_data = BLOCK_MINER.parse_to_block_clock_schema(raw_block_data)
+    key = str(cleaned_block_data['number'])
+    BLOCK_METADATA_PRODUCER.produce(TOPIC_BLOCK_METADATA, key=key, value=cleaned_block_data, on_delivery=BLOCK_MINER.message_handler)
+    BLOCK_METADATA_PRODUCER.poll(1)
+    transactions = BLOCK_MINER.limit_transactions(cleaned_block_data, TXS_PER_BLOCK)
+    for tx_hash_id_index in range(len(transactions)):
+      partition = tx_hash_id_index % int(TOPIC_TX_HASH_IDS_PARTITIONS)
+      message_key = transactions[tx_hash_id_index]
+      HASH_TXS_ID_PRODUCER.produce(topic=TOPIC_TX_HASH_IDS, key=message_key, value=message_key, partition=partition)
+    HASH_TXS_ID_PRODUCER.flush()
+    BLOCK_METADATA_PRODUCER.flush()
+    LOGGER.info(f"Kafka_Ingestion;TOPIC:{TOPIC_TX_HASH_IDS};NUM TRANSACTIONS:{len(transactions)};BLOCK NUMBER:{cleaned_block_data['number']}")

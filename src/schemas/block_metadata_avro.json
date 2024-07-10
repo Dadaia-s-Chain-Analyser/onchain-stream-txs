@@ -1,0 +1,40 @@
+{
+  "namespace": "io.onchain.streamtxs.avro",
+  "type": "record",
+  "name": "BlockClock",
+  "fields": [
+    {"name": "number", "type": "long"},
+    {"name": "timestamp", "type": "long"},
+    {"name": "hash", "type": "string"},
+    {"name": "parentHash", "type": "string"},
+    {"name": "difficulty", "type": "long"},
+    {"name": "totalDifficulty", "type": "string"},
+    {"name": "nonce", "type": "string"},
+    {"name": "size", "type": "long"},
+    {"name": "miner", "type": "string"},
+    {"name": "baseFeePerGas", "type": "long"},
+    {"name": "gasLimit", "type": "long"},
+    {"name": "gasUsed", "type": "long"},
+    {"name": "logsBloom", "type": "string"},
+    {"name": "extraData", "type": "string"},
+    {"name": "transactionsRoot", "type": "string"},
+    {"name": "stateRoot", "type": "string"},
+    {"name": "transactions", "type": {"type": "array", "items": "string"}},
+    {
+      "name": "withdrawals", 
+      "type": {
+        "type": "array", 
+        "items": {
+          "type": "record",
+          "name": "Withdrawal",
+          "fields": [
+            {"name": "index", "type": "long"},
+            {"name": "validatorIndex", "type": "long"},
+            {"name": "address", "type": "string"},
+            {"name": "amount", "type": "long"}
+          ]
+        }
+      }
+    }
+  ]
+}
