@@ -1,0 +1,45 @@
+{
+  "namespace": "io.streamr.onchain",
+  "type": "record",
+  "name": "Transaction",
+  "fields": [
+    {"name": "blockHash", "type": "string"},
+    {"name": "blockNumber", "type": "long"},
+    {"name": "hash", "type": "string"},
+    {"name": "transactionIndex", "type": "long"},
+    {"name": "from", "type": "string"},
+    {"name": "to", "type": "string"},
+    {"name": "value", "type": "string"},
+    {"name": "input", "type": "string"},
+    {"name": "gas", "type": "long"},
+    {"name": "gasPrice", "type": "long"},
+    {"name": "nonce", "type": "long"},
+    {"name": "v", "type": "long"},
+    {"name": "r", "type": "string"},
+    {"name": "s", "type": "string"},
+    {"name": "type", "type": "long"},
+    {
+      "name": "accessList",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "accessList",
+          "fields": [
+            {
+              "name": "address", 
+              "type": "string"
+            },
+            {
+              "name": "storageKeys",
+              "type": {
+                "type": "array",
+                "items": "string"
+              }
+            }
+          ]
+        }
+      }
+    }
+    ]
+}

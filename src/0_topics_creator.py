@@ -72,10 +72,10 @@ if __name__ == "__main__":
     topics_maker = TopicCreator(network, config, bootstrap_servers)
     topics_maker.make_topic_from_configs('topic.block_metadata', overwrite=overwrite)
     topics_maker.make_topic_from_configs('topic.hash_txs', overwrite=overwrite)
-    topics_maker.make_topic_from_configs('topic.raw_txs', overwrite=overwrite)
     topics_maker.make_topic_from_configs('topic.txs.native_token_transfer', overwrite=overwrite)
     topics_maker.make_topic_from_configs('topic.txs.contract_interaction', overwrite=overwrite)
     topics_maker.make_topic_from_configs('topic.txs.contract_deployment', overwrite=overwrite)
+    topics_maker.make_topic_from_configs('topic.txs.input.decoded', overwrite=overwrite)
     topics_maker.make_topic_from_configs('topic.application.logs', overwrite=overwrite)
 
 

@@ -116,7 +116,7 @@ if __name__ == '__main__':
   TOPIC_LOGS = os.getenv("TOPIC_LOGS")
   TOPIC_BLOCK_METADATA = os.getenv("TOPIC_BLOCK_METADATA")
   TOPIC_TX_HASH_IDS = os.getenv("TOPIC_TX_HASH_IDS")
-  TOPIC_TX_HASH_IDS_PARTITIONS = int(os.getenv("TOPIC_TX_HASH_IDS_PARTITIONS", 1))
+  TOPIC_TX_HASH_IDS_PARTITIONS = int(os.getenv("TOPIC_TX_HASH_IDS_PARTITIONS", 8))
 
   NETWORK = os.getenv("NETWORK")
   TXS_PER_BLOCK = int(os.getenv("TXS_PER_BLOCK", 8))

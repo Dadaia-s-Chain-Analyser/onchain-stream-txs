@@ -60,7 +60,7 @@ class APIKeysManager:
       
                      
   def free_api_keys(self, free_timeout: float = 15) -> None:
-    api_keys_data_cached = {api_key: self.redis_client.hgetall(api_key) for api_key in self.redis_client.keys()}
+    api_keys_data_cached = {api_key: self.redis_client.hgetall(api_key) for api_key in self.redis_client.keys() if api_key != "api_keys_semaphore"}
     api_keys_to_free = [api_key for api_key, value in api_keys_data_cached.items() if dt.now().timestamp() - float(value["last_update"]) > free_timeout]
     for api_key in api_keys_to_free:
       self.redis_client.delete(api_key)

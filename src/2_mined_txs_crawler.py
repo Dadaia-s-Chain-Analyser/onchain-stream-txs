@@ -11,7 +11,11 @@ from web3.exceptions import TransactionNotFound
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 
-from confluent_kafka import Producer, Consumer
+from confluent_kafka import SerializingProducer, Producer, Consumer
+from confluent_kafka.serialization import StringSerializer
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroSerializer
+
 from configparser import ConfigParser
 from cassandra.cluster import Cluster, Session
 
@@ -19,12 +23,14 @@ from utils.dm_utils import DataMasterUtils
 from utils.blockchain_node_connector import BlockchainNodeConnector
 from utils.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
 from utils.api_keys_manager import APIKeysManager
+from utils.kafka_handlers import SuccessHandler, ErrorHandler
 
 
 class RawTransactionsProcessor(BlockchainNodeConnector):
 
-  def __init__(self, network: str, logger, akv_client):
+  def __init__(self, network: str, logger, akv_client, schema_registry):
     super().__init__(logger, akv_client, network)
+    self.schema_registry_url = schema_registry
     self.utils = DataMasterUtils()
     self.actual_api_key = None
     self.web3 = None                          
@@ -54,8 +60,8 @@ class RawTransactionsProcessor(BlockchainNodeConnector):
       "hash": bytes.hex(tx_data["hash"]),
       "transactionIndex": tx_data["transactionIndex"],
       "from": tx_data["from"],
-      "to": tx_data["to"],
-      "value": tx_data["value"],
+      "to": tx_data["to"] if tx_data["to"] else "",
+      "value": str(tx_data["value"]),
       "input": bytes.hex(tx_data["input"]),
       "gas": tx_data["gas"],
       "gasPrice": tx_data["gasPrice"],
@@ -69,28 +75,41 @@ class RawTransactionsProcessor(BlockchainNodeConnector):
       "accessList": access_list
     }
 
+  def __get_transaction_avro_schema(self):
+    with open('schemas/transactions_schema_avro.json') as f:
+      return json.load(f)
+    
+
+  def create_serializable_producer(self, producer_configs) -> SerializingProducer:
+    schema_registry_conf = {'url': self.schema_registry_url}
+    schema_registry_client = SchemaRegistryClient(schema_registry_conf)
+    avro_schema = json.dumps(self.__get_transaction_avro_schema())
+    avro_serializer = AvroSerializer(
+      schema_registry_client,
+      avro_schema,
+      lambda msg, ctx: dict(msg)
+    )
+    producer_configs['key.serializer'] = StringSerializer('utf_8')
+    producer_configs['value.serializer'] = avro_serializer
+    return SerializingProducer(producer_configs)
+
+
   def capture_tx_data(self, tx_id):
-    try: 
+    try:
       tx_data = self.web3.eth.get_transaction(tx_id)
       self.logger.info(f"API_request;{self.actual_api_key}")
       return tx_data
     except TransactionNotFound:
       self.logger.error(f"Transaction not found: {tx_id}")
-  
-
-  def produce_tx_raw_data(self, producer, topic, data):
-    encoded_message = json.dumps(data).encode('utf-8')
-    producer.produce(topic, value=encoded_message)
-    producer.flush()
-    self.logger.info(f"mined_block_ingested;{data['hash']};{data['blockNumber']}")
-
 
   def check_type_transaction(self, tx_data):
     if tx_data['to'] == None: return 2
     elif tx_data['input'] == '': return 1
     else: return 3
 
-  
+  def message_handler(self, err, msg):
+    if err is not None: ErrorHandler(self.logger)(err)
+    else: SuccessHandler(self.logger)(msg)
 
 if __name__ == '__main__':
 
@@ -102,6 +121,7 @@ if __name__ == '__main__':
   TOPIC_TX_CONTRACT_DEPLOY = os.getenv("TOPIC_TX_CONTRACT_DEPLOY")
   TOPIC_TX_CONTRACT_CALL = os.getenv("TOPIC_TX_CONTRACT_CALL")
   TOPIC_TX_TOKEN_TRANSFER = os.getenv("TOPIC_TX_TOKEN_TRANSFER")
+  SCHEMA_REGISTRY_URL = os.getenv("SCHEMA_REGISTRY_URL")
 
   SCYLLA_HOST = os.getenv("SCYLLA_HOST")
   SCYLLA_PORT = os.getenv("SCYLLA_PORT")
@@ -114,7 +134,7 @@ if __name__ == '__main__':
   AKV_COMPACTED_SECRETS = os.getenv('AKV_SECRET_NAMES')
   TX_THROUGHPUT_THRESHOLD = 100
   PROCESS_ID = f"job-{str(uuid.uuid4())[:4]}"
-  COUNTER = 0
+  
 
   REDIS_CLIENT: Redis = Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASS, decode_responses=True)
   SCYLLA_SESSION: Session = Cluster([SCYLLA_HOST],port=SCYLLA_PORT).connect(SCYLLA_KEYSPACE,wait_for_all_pools=True)
@@ -135,7 +155,6 @@ if __name__ == '__main__':
 
   # Criação de consumer para o tópico de hash_tx_ids e 1 producer para o tópico de raw_txs
   create_producer = lambda special_config: Producer(**KAFKA_BROKERS, **config['producer.general.config'], **config[special_config])
-  PRODUCER_RAW_TX_DATA = create_producer('producer.raw_txs')
   PRODUCER_LOGS = create_producer('producer.logs.application')
   CONSUMER_HASH_TX_IDS = Consumer(**KAFKA_BROKERS, **config['consumer.hash_txs'])
   CONSUMER_HASH_TX_IDS.subscribe([TOPIC_TX_HASH_IDS])
@@ -148,16 +167,20 @@ if __name__ == '__main__':
   LOGGER.addHandler(ConsoleLoggingHandler)
   LOGGER.addHandler(kafka_handler)
 
-  api_key_arbitrator = APIKeysManager(LOGGER, PROCESS_ID, SCYLLA_SESSION, SCYLLA_TABLE, REDIS_CLIENT)
-  raw_tx_processor = RawTransactionsProcessor(NETWORK, LOGGER, AKV_CLIENT)
-  api_keys_received = api_key_arbitrator.decompress_api_key_names(AKV_COMPACTED_SECRETS)
+  API_KEY_ARBITRATOR = APIKeysManager(LOGGER, PROCESS_ID, SCYLLA_SESSION, SCYLLA_TABLE, REDIS_CLIENT)
+  TXS_PROCESSOR = RawTransactionsProcessor(NETWORK, LOGGER, AKV_CLIENT, SCHEMA_REGISTRY_URL)
+  api_keys_received = API_KEY_ARBITRATOR.decompress_api_key_names(AKV_COMPACTED_SECRETS)
   
-  api_key_arbitrator.free_api_keys()
-  api_key_arbitrator.populate_scylla_with_missing_api_keys(api_keys_received)
+  PRODUCER_RAW_TX_DATA = TXS_PROCESSOR.create_serializable_producer(
+    {**KAFKA_BROKERS, **config['producer.general.config'], **config['producer.block_metadata']}
+  )
 
-  actual_api_key = api_key_arbitrator.elect_new_api_key()
-  raw_tx_processor.set_web3_node_connection(actual_api_key)
-  api_key_arbitrator.check_api_key_request(actual_api_key)
+  API_KEY_ARBITRATOR.free_api_keys()
+  API_KEY_ARBITRATOR.populate_scylla_with_missing_api_keys(api_keys_received)
+
+  actual_api_key = API_KEY_ARBITRATOR.elect_new_api_key()
+  TXS_PROCESSOR.set_web3_node_connection(actual_api_key)
+  API_KEY_ARBITRATOR.check_api_key_request(actual_api_key)
   
   DICT_TYPE_TRANSACTIONS = {
     1: TOPIC_TX_TOKEN_TRANSFER,
@@ -165,34 +188,36 @@ if __name__ == '__main__':
     3: TOPIC_TX_CONTRACT_CALL
   }
 
-  for msg in raw_tx_processor.consuming_topic(CONSUMER_HASH_TX_IDS):
-    raw_transaction_data = raw_tx_processor.capture_tx_data(msg)
-    cleaned_transaction_data = raw_tx_processor.parse_to_transaction_schema(raw_transaction_data)
-    # if not tx_data: continue
-    api_key_arbitrator.check_api_key_request(actual_api_key)
-    type_transaction = raw_tx_processor.check_type_transaction(cleaned_transaction_data)
-    raw_tx_processor.produce_tx_raw_data(
-      producer=PRODUCER_RAW_TX_DATA,
-      topic=DICT_TYPE_TRANSACTIONS[type_transaction],
-      data=cleaned_transaction_data)
+  counter = 0
+  for msg in TXS_PROCESSOR.consuming_topic(CONSUMER_HASH_TX_IDS):
+    raw_transaction_data = TXS_PROCESSOR.capture_tx_data(msg)
+    API_KEY_ARBITRATOR.check_api_key_request(actual_api_key)
+    if not raw_transaction_data: continue
+    cleaned_transaction_data = TXS_PROCESSOR.parse_to_transaction_schema(raw_transaction_data)
+    
+    msg_key = str(cleaned_transaction_data['hash']) 
+    type_transaction = TXS_PROCESSOR.check_type_transaction(cleaned_transaction_data)
+    topic = DICT_TYPE_TRANSACTIONS[type_transaction]
+    PRODUCER_RAW_TX_DATA.produce(topic, key=msg_key, value=cleaned_transaction_data, on_delivery=TXS_PROCESSOR.message_handler)
+    PRODUCER_RAW_TX_DATA.poll(1)
 
     if REDIS_CLIENT.hget(actual_api_key, "process") != PROCESS_ID:
       LOGGER.info(f"API KEY {actual_api_key} is being used by another process.")
-      new_api_key = api_key_arbitrator.elect_new_api_key()
-      if new_api_key: 
+      new_api_key = API_KEY_ARBITRATOR.elect_new_api_key()
+      if new_api_key:
         actual_api_key = new_api_key
-        raw_tx_processor.set_web3_node_connection(actual_api_key)
+        TXS_PROCESSOR.set_web3_node_connection(actual_api_key)
 
-    if COUNTER % TX_THROUGHPUT_THRESHOLD == 0:
+    if counter % TX_THROUGHPUT_THRESHOLD == 0:
       LOGGER.info(f"API KEY {actual_api_key} reached throughput threshold.")
-      new_api_key = api_key_arbitrator.elect_new_api_key()
+      new_api_key = API_KEY_ARBITRATOR.elect_new_api_key()
       if new_api_key: 
         REDIS_CLIENT.delete(actual_api_key)
         actual_api_key = new_api_key
-        raw_tx_processor.set_web3_node_connection(actual_api_key)
-        api_key_arbitrator.check_api_key_request(actual_api_key)
+        TXS_PROCESSOR.set_web3_node_connection(actual_api_key)
+        API_KEY_ARBITRATOR.check_api_key_request(actual_api_key)
 
-    if COUNTER % 10 == 0:
-      api_key_arbitrator.free_api_keys()
+    if counter % 10 == 0:
+      API_KEY_ARBITRATOR.free_api_keys()
     
-    COUNTER += 1
+    counter += 1
