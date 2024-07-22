@@ -16,6 +16,11 @@ from configparser import ConfigParser
 from utils.dm_utils import DataMasterUtils
 from utils.blockchain_node_connector import BlockchainNodeConnector
 from utils.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroDeserializer
+
+
+
 
 
 class TransactionConverter(BlockchainNodeConnector):
@@ -56,12 +61,22 @@ class TransactionConverter(BlockchainNodeConnector):
         input_data = dict(method=method, parms=parms_method)
         return input_data
 
+  def __get_transaction_avro_schema(self):
+    with open('schemas/transactions_schema_avro.json') as f:
+      return json.load(f)
+    
   def consuming_topic(self, consumer):
     while True:
       msg = consumer.poll(timeout=0.1)
-      if msg: yield json.loads(msg.value())
+      msg, _ = self.process_record_confluent(msg.value())
+      print(msg)
+      if msg: yield msg
 
-        
+  def process_record_confluent(self, record: bytes):
+      avro_schema = json.dumps(self.__get_transaction_avro_schema())
+      schema_registry_client = os.getenv('SCHEMA_REGISTRY_URL')
+      deserializer = AvroDeserializer(schema_registry_client, avro_schema, lambda msg, ctx: dict(msg))
+      return deserializer(record, None)
 
 if __name__ == '__main__':
     
@@ -69,6 +84,8 @@ if __name__ == '__main__':
   NETWORK = os.environ["NETWORK"]
   KAFKA_BROKERS = {'bootstrap.servers': os.getenv("KAFKA_BROKERS")}
   TOPIC_LOGS = os.getenv('TOPIC_LOGS')
+  GROUP_ID = os.getenv('GROUP_ID')
+  SCHEMA_REGISTRY_URL = os.getenv('SCHEMA_REGISTRY_URL')
   TOPIC_TX_CONTRACT_CALL = os.getenv('TOPIC_TX_CONTRACT_CALL')
   TOPIC_TX_CONTRACT_CALL_DECODED = os.getenv('TOPIC_TX_CONTRACT_CALL_DECODED')
   SCHEMA_REGISTRY_URL = os.getenv('SCHEMA_REGISTRY_URL')
@@ -98,9 +115,9 @@ if __name__ == '__main__':
   
   # Criação de 1 consumer para o tópico de hash_txs e 1 producer para o tópico de raw_txs
   create_producer = lambda special_config: Producer(**KAFKA_BROKERS, **config['producer.general.config'], **config[special_config])
-  PRODUCER_LOGS = create_producer('producer.logs.application')
-  producer_parsed_input_txs = create_producer('producer.txs.input.decoded')
-  CONSUMER_TX_CONTRACT_CALL = Consumer(**KAFKA_BROKERS, **config['consumer.txs.contract_interaction'])
+  PRODUCER_LOGS = create_producer('producer.config.p1')
+  producer_parsed_input_txs = create_producer('producer.config.p1')
+  CONSUMER_TX_CONTRACT_CALL = Consumer(**KAFKA_BROKERS, **config['consumer.general.config'], **{'group.id': 'CONSUMER_TX_CONTRACT_CALL'})
   CONSUMER_TX_CONTRACT_CALL.subscribe([TOPIC_TX_CONTRACT_CALL])
 
   # Configurando Logging para console e Kafka

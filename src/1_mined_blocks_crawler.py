@@ -110,19 +110,20 @@ class MinedBlocksProcessor(BlockchainNodeConnector):
 if __name__ == '__main__':
     
   APP_NAME = "BLOCK_CLOCK_APP"
-
   KAFKA_BROKERS = {'bootstrap.servers': os.getenv("KAFKA_BROKERS")} 
-  SCHEMA_REGISTRY_URL = os.getenv("SCHEMA_REGISTRY_URL")
+  AKV_SECRET_NAME = os.getenv('AKV_SECRET_NAME')
+
+  NETWORK = os.getenv("NETWORK")
   TOPIC_LOGS = os.getenv("TOPIC_LOGS")
   TOPIC_BLOCK_METADATA = os.getenv("TOPIC_BLOCK_METADATA")
   TOPIC_TX_HASH_IDS = os.getenv("TOPIC_TX_HASH_IDS")
-  TOPIC_TX_HASH_IDS_PARTITIONS = int(os.getenv("TOPIC_TX_HASH_IDS_PARTITIONS", 8))
+  SCHEMA_REGISTRY_URL = os.getenv("SCHEMA_REGISTRY_URL")
+  AKV_NODE_NAME = os.getenv('AKV_NAME')
 
-  NETWORK = os.getenv("NETWORK")
+  TOPIC_TX_HASH_IDS_PARTITIONS = int(os.getenv("TOPIC_TX_HASH_IDS_PARTITIONS"))
   TXS_PER_BLOCK = os.getenv("TXS_PER_BLOCK")
   CLOCK_FREQUENCY = float(os.getenv("CLOCK_FREQUENCY"))
-  AKV_NAME = os.getenv('AKV_NAME')
-  AKV_SECRET_NAME = os.getenv('AKV_SECRET_NAME')
+  
 
   # Configuração de argumentos a serem passados via linha de comando e leitura do arquivo de configuração
   parser = argparse.ArgumentParser(description=f'Streaming de blocos minerados na rede {NETWORK}')
