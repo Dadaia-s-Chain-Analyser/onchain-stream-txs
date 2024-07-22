@@ -28,7 +28,9 @@ class APIKeysManager:
   def insert_api_keys_into_scylla(self, api_keys: List[str]) -> None:
     query_base = f"INSERT INTO {self.scylla_table} "
     query_base += "(name, start, end, num_req_1d, last_req) VALUES"
-    TEMPL_QUERY = lambda apk, timestamp: f"{query_base} ('{apk}', null, null, 0, '{timestamp}')"
+    # Timestamp day 0
+    timestamp_default = "2021-01-01 00:00:00.000000"
+    TEMPL_QUERY = lambda apk, timestamp: f"{query_base} ('{apk}', '{timestamp_default}', '{timestamp_default}', 0, '{timestamp}')"
     for api_key in api_keys:
       query = TEMPL_QUERY(api_key, dt.now().strftime("%Y-%m-%d %H:%M:%S.%f"))
       self.scylla_session.execute(query)

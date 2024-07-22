@@ -81,9 +81,9 @@ class MinedBlocksProcessor(BlockchainNodeConnector):
     }
 
 
-  def limit_transactions(self, block_data, threshold):
-    if threshold == 0: return block_data["transactions"]
-    else: return block_data["transactions"][:threshold]
+  def limit_transactions(self, block_data, threshold=None):
+    if not threshold: return block_data["transactions"]
+    else: return block_data["transactions"][:int(threshold)]
   
 
   def streaming_block_data(self, frequency):
@@ -119,8 +119,8 @@ if __name__ == '__main__':
   TOPIC_TX_HASH_IDS_PARTITIONS = int(os.getenv("TOPIC_TX_HASH_IDS_PARTITIONS", 8))
 
   NETWORK = os.getenv("NETWORK")
-  TXS_PER_BLOCK = int(os.getenv("TXS_PER_BLOCK", 8))
-  CLOCK_FREQUENCY = float(os.getenv("CLOCK_FREQUENCY", 1))
+  TXS_PER_BLOCK = os.getenv("TXS_PER_BLOCK")
+  CLOCK_FREQUENCY = float(os.getenv("CLOCK_FREQUENCY"))
   AKV_NAME = os.getenv('AKV_NAME')
   AKV_SECRET_NAME = os.getenv('AKV_SECRET_NAME')
 
@@ -134,15 +134,9 @@ if __name__ == '__main__':
   AKV_URL = f'https://{AKV_NAME}.vault.azure.net/'
   AKV_CLIENT = SecretClient(vault_url=AKV_URL, credential=DefaultAzureCredential())
 
-  # Configurando producers relativos a: block_metadata, hash_txs e logs
-  create_simple_producer = lambda special_config: Producer(
-    **KAFKA_BROKERS,
-    **config['producer.general.config'],
-    **config[special_config]
-    )
-  
-  LOGS_PRODUCER = create_simple_producer('producer.logs.application')
-  HASH_TXS_ID_PRODUCER = create_simple_producer('producer.hash_txs')
+  general_conf_producer = {**KAFKA_BROKERS, "client.id": APP_NAME.lower(), **config['producer.general.config']}
+  LOGS_PRODUCER = Producer(**general_conf_producer, **config['producer.config.p1'])
+  HASH_TXS_ID_PRODUCER = Producer(**general_conf_producer, **config['producer.config.p1'])
   
   # Configurando Logging
   LOGGER = logging.getLogger(APP_NAME)
@@ -161,7 +155,7 @@ if __name__ == '__main__':
 
   BLOCK_MINER = MinedBlocksProcessor(NETWORK, LOGGER, AKV_CLIENT, AKV_SECRET_NAME, SCHEMA_REGISTRY_URL)
   BLOCK_METADATA_PRODUCER = BLOCK_MINER.create_serializable_producer(
-    {**KAFKA_BROKERS, **config['producer.general.config'], **config['producer.block_metadata']}
+    {**KAFKA_BROKERS, **config['producer.general.config'], **{"client.id": APP_NAME.lower()}}
   )
 
 
@@ -169,7 +163,6 @@ if __name__ == '__main__':
     cleaned_block_data = BLOCK_MINER.parse_to_block_clock_schema(raw_block_data)
     key = str(cleaned_block_data['number'])
     BLOCK_METADATA_PRODUCER.produce(TOPIC_BLOCK_METADATA, key=key, value=cleaned_block_data, on_delivery=BLOCK_MINER.message_handler)
-    BLOCK_METADATA_PRODUCER.poll(1)
     transactions = BLOCK_MINER.limit_transactions(cleaned_block_data, TXS_PER_BLOCK)
     for tx_hash_id_index in range(len(transactions)):
       partition = tx_hash_id_index % int(TOPIC_TX_HASH_IDS_PARTITIONS)

@@ -115,9 +115,10 @@ if __name__ == '__main__':
 
   APP_NAME="RAW_TXS_CRAWLER"
   NETWORK = os.getenv("NETWORK")
-  KAFKA_BROKERS = {'bootstrap.servers': os.getenv("KAFKA_BROKERS")}
+  KAFKA_BROKERS = {"bootstrap.servers": os.getenv("KAFKA_BROKERS")}
   TOPIC_LOGS = os.getenv("TOPIC_LOGS")
   TOPIC_TX_HASH_IDS = os.getenv("TOPIC_TX_HASH_IDS")
+  GROUP_ID = os.getenv("GROUP_ID")
   TOPIC_TX_CONTRACT_DEPLOY = os.getenv("TOPIC_TX_CONTRACT_DEPLOY")
   TOPIC_TX_CONTRACT_CALL = os.getenv("TOPIC_TX_CONTRACT_CALL")
   TOPIC_TX_TOKEN_TRANSFER = os.getenv("TOPIC_TX_TOKEN_TRANSFER")
@@ -133,8 +134,12 @@ if __name__ == '__main__':
   AKV_NAME = os.getenv("AKV_NAME")
   AKV_COMPACTED_SECRETS = os.getenv('AKV_SECRET_NAMES')
   TX_THROUGHPUT_THRESHOLD = 100
-  PROCESS_ID = f"job-{str(uuid.uuid4())[:4]}"
+  PROC_ID = f"job-{str(uuid.uuid4())[:8]}"
   
+  LOGGER = logging.getLogger(f"{APP_NAME}_{PROC_ID}")
+  LOGGER.setLevel(logging.INFO)
+  LOGGER.addHandler(ConsoleLoggingHandler())
+
 
   REDIS_CLIENT: Redis = Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASS, decode_responses=True)
   SCYLLA_SESSION: Session = Cluster([SCYLLA_HOST],port=SCYLLA_PORT).connect(SCYLLA_KEYSPACE,wait_for_all_pools=True)
@@ -153,26 +158,22 @@ if __name__ == '__main__':
   config.read_file(args.config_producer)
   config.read_file(args.config_consumer)
 
-  # Criação de consumer para o tópico de hash_tx_ids e 1 producer para o tópico de raw_txs
-  create_producer = lambda special_config: Producer(**KAFKA_BROKERS, **config['producer.general.config'], **config[special_config])
-  PRODUCER_LOGS = create_producer('producer.logs.application')
-  CONSUMER_HASH_TX_IDS = Consumer(**KAFKA_BROKERS, **config['consumer.hash_txs'])
+  general_conf_producer = {**KAFKA_BROKERS, "client.id": PROC_ID, **config['producer.general.config']}
+  PRODUCER_LOGS = Producer(**general_conf_producer, **config['producer.config.p1'])
+
+  general_conf_consumer = {**KAFKA_BROKERS, "group.id": GROUP_ID, **config['consumer.general.config']}
+  CONSUMER_HASH_TX_IDS = Consumer(**general_conf_consumer, **{"client.id": PROC_ID})
   CONSUMER_HASH_TX_IDS.subscribe([TOPIC_TX_HASH_IDS])
 
-  # Configurando Logging para console e Kafka
-  LOGGER = logging.getLogger(f"{APP_NAME}_{PROCESS_ID}")
-  LOGGER.setLevel(logging.INFO)
   kafka_handler = KafkaLoggingHandler(PRODUCER_LOGS, TOPIC_LOGS)
-  ConsoleLoggingHandler = ConsoleLoggingHandler()
-  LOGGER.addHandler(ConsoleLoggingHandler)
   LOGGER.addHandler(kafka_handler)
 
-  API_KEY_ARBITRATOR = APIKeysManager(LOGGER, PROCESS_ID, SCYLLA_SESSION, SCYLLA_TABLE, REDIS_CLIENT)
+  API_KEY_ARBITRATOR = APIKeysManager(LOGGER, PROC_ID, SCYLLA_SESSION, SCYLLA_TABLE, REDIS_CLIENT)
   TXS_PROCESSOR = RawTransactionsProcessor(NETWORK, LOGGER, AKV_CLIENT, SCHEMA_REGISTRY_URL)
   api_keys_received = API_KEY_ARBITRATOR.decompress_api_key_names(AKV_COMPACTED_SECRETS)
   
   PRODUCER_RAW_TX_DATA = TXS_PROCESSOR.create_serializable_producer(
-    {**KAFKA_BROKERS, **config['producer.general.config'], **config['producer.block_metadata']}
+    {**general_conf_producer, **config['producer.config.p1']}
   )
 
   API_KEY_ARBITRATOR.free_api_keys()
@@ -201,7 +202,7 @@ if __name__ == '__main__':
     PRODUCER_RAW_TX_DATA.produce(topic, key=msg_key, value=cleaned_transaction_data, on_delivery=TXS_PROCESSOR.message_handler)
     PRODUCER_RAW_TX_DATA.poll(1)
 
-    if REDIS_CLIENT.hget(actual_api_key, "process") != PROCESS_ID:
+    if REDIS_CLIENT.hget(actual_api_key, "process") != PROC_ID:
       LOGGER.info(f"API KEY {actual_api_key} is being used by another process.")
       new_api_key = API_KEY_ARBITRATOR.elect_new_api_key()
       if new_api_key:
