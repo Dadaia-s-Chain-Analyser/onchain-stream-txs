@@ -1,31 +1,25 @@
 import argparse
-import hexbytes
 import json
 import logging
 import os
 import time
-import datetime as dt
 
 from configparser import ConfigParser
 from requests import HTTPError
-from confluent_kafka import SerializingProducer, Producer
-from confluent_kafka.serialization import StringSerializer
-from confluent_kafka.schema_registry import SchemaRegistryClient
-from confluent_kafka.schema_registry.avro import AvroSerializer
+from confluent_kafka import Producer
 
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 
 from utils.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
 from utils.blockchain_node_connector import BlockchainNodeConnector
-from utils.kafka_handlers import SuccessHandler, ErrorHandler
+from utils.schema_registry_handler import SchemaRegistryHandler
 
 
 class MinedBlocksProcessor(BlockchainNodeConnector):
 
-  def __init__(self, network, logger, akv_client, api_key_name, schema_registry_url):
+  def __init__(self, network, logger, akv_client, api_key_name):
     super().__init__(logger, akv_client, network)
-    self.schema_registry_url = schema_registry_url
     self.web3 = super().get_node_connection(api_key_name, 'alchemy')
     self.api_key_name = api_key_name
 
@@ -39,23 +33,9 @@ class MinedBlocksProcessor(BlockchainNodeConnector):
       self.logger.error(f"API_request;{self.api_key_name};Error:{str(e)}")
       return
     
-  def __get_block_clock_avro_schema(self):
+  def get_block_clock_avro_schema(self):
     with open('schemas/block_metadata_avro.json') as f:
-      return json.load(f) 
-  
-
-  def create_serializable_producer(self, producer_configs) -> SerializingProducer:
-    schema_registry_conf = {'url': self.schema_registry_url}
-    schema_registry_client = SchemaRegistryClient(schema_registry_conf)
-    avro_schema = json.dumps(self.__get_block_clock_avro_schema())
-    avro_serializer = AvroSerializer(
-      schema_registry_client,
-      avro_schema,
-      lambda msg, ctx: dict(msg)
-    )
-    producer_configs['key.serializer'] = StringSerializer('utf_8')
-    producer_configs['value.serializer'] = avro_serializer
-    return SerializingProducer(producer_configs)
+      return json.dumps(json.load(f))
 
 
   def parse_to_block_clock_schema(self, block_raw_data):
@@ -102,11 +82,6 @@ class MinedBlocksProcessor(BlockchainNodeConnector):
       time.sleep(float(frequency))
 
 
-  def message_handler(self, err, msg):
-    if err is not None: ErrorHandler(self.logger)(err)
-    else: SuccessHandler(self.logger)(msg)
-
-
 if __name__ == '__main__':
     
   APP_NAME = "BLOCK_CLOCK_APP"
@@ -118,8 +93,7 @@ if __name__ == '__main__':
   TOPIC_BLOCK_METADATA = os.getenv("TOPIC_BLOCK_METADATA")
   TOPIC_TX_HASH_IDS = os.getenv("TOPIC_TX_HASH_IDS")
   SCHEMA_REGISTRY_URL = os.getenv("SCHEMA_REGISTRY_URL")
-  AKV_NODE_NAME = os.getenv('AKV_NAME')
-
+  AKV_NODE_NAME = os.getenv('AKV_NODE_NAME')
   TOPIC_TX_HASH_IDS_PARTITIONS = int(os.getenv("TOPIC_TX_HASH_IDS_PARTITIONS"))
   TXS_PER_BLOCK = os.getenv("TXS_PER_BLOCK")
   CLOCK_FREQUENCY = float(os.getenv("CLOCK_FREQUENCY"))
@@ -132,7 +106,7 @@ if __name__ == '__main__':
   config = ConfigParser()
   config.read_file(args.config_producer)
 
-  AKV_URL = f'https://{AKV_NAME}.vault.azure.net/'
+  AKV_URL = f'https://{AKV_NODE_NAME}.vault.azure.net/'
   AKV_CLIENT = SecretClient(vault_url=AKV_URL, credential=DefaultAzureCredential())
 
   general_conf_producer = {**KAFKA_BROKERS, "client.id": APP_NAME.lower(), **config['producer.general.config']}
@@ -154,16 +128,16 @@ if __name__ == '__main__':
   LOGGER.info(f"TOPIC_BLOCK_METADATA={TOPIC_BLOCK_METADATA}")
   LOGGER.info(f"TOPIC_TX_HASH_IDS={TOPIC_TX_HASH_IDS}")
 
-  BLOCK_MINER = MinedBlocksProcessor(NETWORK, LOGGER, AKV_CLIENT, AKV_SECRET_NAME, SCHEMA_REGISTRY_URL)
-  BLOCK_METADATA_PRODUCER = BLOCK_MINER.create_serializable_producer(
-    {**KAFKA_BROKERS, **config['producer.general.config'], **{"client.id": APP_NAME.lower()}}
-  )
-
+  BLOCK_MINER = MinedBlocksProcessor(NETWORK, LOGGER, AKV_CLIENT, AKV_SECRET_NAME)
+  SCHEMA_REGISTRY_HANDLER = SchemaRegistryHandler(LOGGER, SCHEMA_REGISTRY_URL)
+  
+  producer_configs = {**KAFKA_BROKERS, **config['producer.general.config'], **{"client.id": APP_NAME.lower()}}
+  BLOCK_METADATA_PRODUCER = SCHEMA_REGISTRY_HANDLER.create_avro_producer(producer_configs, BLOCK_MINER.get_block_clock_avro_schema())
 
   for raw_block_data in BLOCK_MINER.streaming_block_data(CLOCK_FREQUENCY):
     cleaned_block_data = BLOCK_MINER.parse_to_block_clock_schema(raw_block_data)
     key = str(cleaned_block_data['number'])
-    BLOCK_METADATA_PRODUCER.produce(TOPIC_BLOCK_METADATA, key=key, value=cleaned_block_data, on_delivery=BLOCK_MINER.message_handler)
+    BLOCK_METADATA_PRODUCER.produce(TOPIC_BLOCK_METADATA, key=key, value=cleaned_block_data, on_delivery=SCHEMA_REGISTRY_HANDLER.message_handler)
     transactions = BLOCK_MINER.limit_transactions(cleaned_block_data, TXS_PER_BLOCK)
     for tx_hash_id_index in range(len(transactions)):
       partition = tx_hash_id_index % int(TOPIC_TX_HASH_IDS_PARTITIONS)

@@ -3,24 +3,19 @@ import json
 import logging
 import os
 
-
 from functools import lru_cache
 from json.decoder import JSONDecodeError
-from web3 import Web3
-from confluent_kafka import Producer, Consumer
 from azure.keyvault.secrets import SecretClient
-from dadaia_tools.etherscan_client import EthercanAPI
 from azure.identity import DefaultAzureCredential
 from configparser import ConfigParser
 
+from dadaia_tools.etherscan_client import EthercanAPI
 from utils.dm_utils import DataMasterUtils
 from utils.blockchain_node_connector import BlockchainNodeConnector
 from utils.dm_logger import ConsoleLoggingHandler, KafkaLoggingHandler
-from confluent_kafka.schema_registry import SchemaRegistryClient
-from confluent_kafka.schema_registry.avro import AvroDeserializer
+from utils.schema_registry_handler import SchemaRegistryHandler
 
-
-
+from confluent_kafka import Producer
 
 
 class TransactionConverter(BlockchainNodeConnector):
@@ -45,13 +40,14 @@ class TransactionConverter(BlockchainNodeConnector):
 
 
   def decode_input(self, contract_address, input_data):
-    try: 
+    try:
       abi = self.etherscan_api.get_contract_abi(contract_address)['result']
       contract, _ = self._get_contract(address=contract_address, abi=abi)
       method, parms_method = contract.decode_function_input(input_data)
     except TypeError as e: print("Deu Ruim")
     except JSONDecodeError as e: print(e)
     except ValueError as e: print(e)
+    except Exception as e: print(e)
     else:
       for key in parms_method:
         if isinstance(parms_method[key], (bytes)): parms_method[key] = parms_method[key].hex()
@@ -61,22 +57,44 @@ class TransactionConverter(BlockchainNodeConnector):
         input_data = dict(method=method, parms=parms_method)
         return input_data
 
-  def __get_transaction_avro_schema(self):
+
+  def get_transaction_avro_schema(self):
     with open('schemas/transactions_schema_avro.json') as f:
-      return json.load(f)
+      return json.dumps(json.load(f))
     
+
+  def get_input_decoded_avro_schema(self):
+    with open('schemas/txs_contract_call_decoded.json') as f:
+      return json.dumps(json.load(f))
+    
+
   def consuming_topic(self, consumer):
     while True:
       msg = consumer.poll(timeout=0.1)
-      msg, _ = self.process_record_confluent(msg.value())
-      print(msg)
-      if msg: yield msg
+      if msg: yield msg.value()
 
-  def process_record_confluent(self, record: bytes):
-      avro_schema = json.dumps(self.__get_transaction_avro_schema())
-      schema_registry_client = os.getenv('SCHEMA_REGISTRY_URL')
-      deserializer = AvroDeserializer(schema_registry_client, avro_schema, lambda msg, ctx: dict(msg))
-      return deserializer(record, None)
+
+  def transform_input(self, tx_data, converted_input_data):
+    if converted_input_data:
+      if converted_input_data["method"] == 'multicall(uint256,bytes[])':
+        converted_input_data["parms"]["data"] = [x.hex() for x in converted_input_data["parms"]["data"]]
+      try:
+        data = {
+          "tx_hash": tx_data['hash'],
+          "block_number": tx_data['blockNumber'],
+          "from": tx_data['from'],
+          "contract_address": contract_address,
+          "input": tx_data['input'],
+          "method": converted_input_data["method"],
+          "parms": json.dumps(converted_input_data["parms"])
+        }
+      except Exception as e:
+        self.logger.error(f"Error: {e}")
+        self.logger.error(f"Data: {converted_input_data}")
+        return None
+      else: return data
+
+
 
 if __name__ == '__main__':
     
@@ -84,7 +102,7 @@ if __name__ == '__main__':
   NETWORK = os.environ["NETWORK"]
   KAFKA_BROKERS = {'bootstrap.servers': os.getenv("KAFKA_BROKERS")}
   TOPIC_LOGS = os.getenv('TOPIC_LOGS')
-  GROUP_ID = os.getenv('GROUP_ID')
+  GROUP_ID = os.getenv('KAFKA_CG_INPUT_DECODER')
   SCHEMA_REGISTRY_URL = os.getenv('SCHEMA_REGISTRY_URL')
   TOPIC_TX_CONTRACT_CALL = os.getenv('TOPIC_TX_CONTRACT_CALL')
   TOPIC_TX_CONTRACT_CALL_DECODED = os.getenv('TOPIC_TX_CONTRACT_CALL_DECODED')
@@ -94,14 +112,13 @@ if __name__ == '__main__':
   AKV_NODE_SECRET_NAME = os.getenv('AKV_NODE_SECRET_NAME')
   AKV_SCAN_SECRET_NAME = os.getenv('AKV_SCAN_SECRET_NAME')
 
-  credential = DefaultAzureCredential()
   AKV_NODE_URL = f'https://{AKV_NODE_NAME}.vault.azure.net/'
   AKV_NODE_CLIENT = SecretClient(vault_url=AKV_NODE_URL, credential=DefaultAzureCredential())
 
   AKV_SCAN_URL = f'https://{AKV_SCAN_NAME}.vault.azure.net/'
   AKV_SCAN_CLIENT = SecretClient(vault_url=AKV_SCAN_URL, credential=DefaultAzureCredential())
 
-  api_key_scan = AKV_SCAN_CLIENT.get_secret(AKV_SCAN_SECRET_NAME)
+  api_key_scan = AKV_SCAN_CLIENT.get_secret(AKV_SCAN_SECRET_NAME).value
 
   parser = argparse.ArgumentParser(description=f'Stream cleaned transactions network')
   parser.add_argument('config_producer', type=argparse.FileType('r'), help='Config Producers')
@@ -117,8 +134,6 @@ if __name__ == '__main__':
   create_producer = lambda special_config: Producer(**KAFKA_BROKERS, **config['producer.general.config'], **config[special_config])
   PRODUCER_LOGS = create_producer('producer.config.p1')
   producer_parsed_input_txs = create_producer('producer.config.p1')
-  CONSUMER_TX_CONTRACT_CALL = Consumer(**KAFKA_BROKERS, **config['consumer.general.config'], **{'group.id': 'CONSUMER_TX_CONTRACT_CALL'})
-  CONSUMER_TX_CONTRACT_CALL.subscribe([TOPIC_TX_CONTRACT_CALL])
 
   # Configurando Logging para console e Kafka
   LOGGER = logging.getLogger(APP_NAME)
@@ -131,18 +146,37 @@ if __name__ == '__main__':
 
   ethercan_api = EthercanAPI(api_key_scan, NETWORK)
   TRANSACTION_CONVERTER = TransactionConverter(LOGGER, NETWORK, AKV_NODE_CLIENT, AKV_NODE_SECRET_NAME, ethercan_api)
+  SCHEMA_REGISTRY_HANDLER = SchemaRegistryHandler(LOGGER, SCHEMA_REGISTRY_URL)
 
-  MONITORED_ADDR = ['0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D',
-                    '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
-                    '0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9',
-                    '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'
-                    ]
+  producer_avro_configs = {**KAFKA_BROKERS, **config['producer.general.config']}
+  PRODUCER_TX_CONTRACT_CALL_DECODED = SCHEMA_REGISTRY_HANDLER.create_avro_producer(producer_avro_configs, TRANSACTION_CONVERTER.get_input_decoded_avro_schema())
+  
+  consumer_avro_configs = {**KAFKA_BROKERS, **config['consumer.general.config'], 'group.id': GROUP_ID}
+  CONSUMER_TX_CONTRACT_CALL = SCHEMA_REGISTRY_HANDLER.create_avro_consumer(consumer_avro_configs, TRANSACTION_CONVERTER.get_transaction_avro_schema())
+  CONSUMER_TX_CONTRACT_CALL.subscribe([TOPIC_TX_CONTRACT_CALL])
+
+  MONITORED_ADDR = [
+    '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D',
+    '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+    '0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9',
+    '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'
+  ]
+
   for tx_data in TRANSACTION_CONVERTER.consuming_topic(CONSUMER_TX_CONTRACT_CALL):
     contract_address = tx_data['to']
     input_data = tx_data['input']
-    print(contract_address, input_data)
     if contract_address in MONITORED_ADDR:
       converted_input_data = TRANSACTION_CONVERTER.decode_input(contract_address, input_data)
-      print("MONITORED", converted_input_data)
+      data_tx_decoded = TRANSACTION_CONVERTER.transform_input(tx_data, converted_input_data)
+      if not data_tx_decoded:
+        LOGGER.error(f"Error: {data_tx_decoded}")
+        continue
+      PRODUCER_TX_CONTRACT_CALL_DECODED.produce(
+        topic=TOPIC_TX_CONTRACT_CALL_DECODED,
+        value=data_tx_decoded,
+        on_delivery=SCHEMA_REGISTRY_HANDLER.message_handler
+      )
+
+      PRODUCER_TX_CONTRACT_CALL_DECODED.flush()
     else:
       continue
